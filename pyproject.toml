@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+lucid-inspect = "lucid.audit.inspect:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 

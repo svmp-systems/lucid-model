@@ -21,6 +21,26 @@ Seven layers of typed, JSON-serializable contracts:
 | 6 | `training.py`, `memory.py` | Episodes, run logs, trace/basin records |
 | 7 | `pipeline.py` | `RunContext`, `SessionState`, `PipelineRun` |
 
+## Audit logger (`lucid/audit`)
+
+Two files per run folder (`audit/runs/{run_id}/`):
+
+| File | For humans | For machines |
+|------|------------|--------------|
+| `README.txt` | Plain-English run overview | — |
+| `manifest.json` | `summary.headline` + stage table | `stages`, hashes, ids |
+| `{stage}.json` | `summary.headline` + `summary.lines` | `input`, `output`, `input_hash` |
+
+```python
+from lucid.audit import AuditLogger
+logger = AuditLogger()
+logger.write_pipeline_run(pipeline_run)
+```
+
+```bash
+lucid-inspect audit/runs/my-run-id
+```
+
 ```bash
 python -m pytest tests/
 ```

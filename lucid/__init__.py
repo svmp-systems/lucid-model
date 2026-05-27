@@ -1,7 +1,7 @@
-"""Lucid cognitive pipeline — IR contracts and (future) runtime stages."""
+"""Lucid cognitive pipeline — IR contracts and runtime stages."""
 
 __version__ = "0.1.0"
 
-from lucid import ir
+from lucid import audit, ir
 
-__all__ = ["ir", "__version__"]
+__all__ = ["audit", "ir", "__version__"]
