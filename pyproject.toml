@@ -19,6 +19,7 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["lucid"]
+force-include = { "orchestrator.py" = "orchestrator.py" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,92 +1,102 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
-import types
+from pathlib import Path
+
+import pytest
 
 
-def _install_stub_pipeline():
-    module = types.ModuleType("pipeline")
+class Perception:
+    def run(self, stage_input):
+        return {
+            "entities": [{"id": "ent-1", "text": str(stage_input)}],
+            "events": [{"id": "evt-1"}],
+            "relations": [{"id": "rel-1"}],
+        }
 
-    class Perception:
-        def run(self, stage_input):
-            return {
-                "entities": [{"id": "ent-1", "text": str(stage_input)}],
-                "events": [{"id": "evt-1"}],
-                "relations": [{"id": "rel-1"}],
-            }
 
-    class CueEncoder:
-        def run(self, stage_input):
-            return {"cue": "ok", "source": stage_input}
+class FailingPerception:
+    def run(self, stage_input):
+        raise RuntimeError(f"cannot perceive {stage_input}")
 
-    class DMF:
-        def run(self, stage_input):
-            return {"active_traces": ["trace-1"], "trace_clusters": ["cluster-1"]}
 
-    class Binding:
-        def run(self, stage_input):
-            return {"candidate_bindings": [{"binding_id": "bind-1"}]}
+class CueEncoder:
+    def run(self, stage_input):
+        return {"cue": "ok", "source": stage_input}
 
-    class ContextOp:
-        def run(self, stage_input):
-            return {
-                "context_frames": [{"frame_id": "ctx-1"}],
-                "scoped_trace_assignments": {"trace-1": "ctx-1"},
-            }
 
-    class Interference:
-        def run(self, stage_input):
-            return {
-                "interference_edges": ["edge-1"],
-                "active_basins": [{"basin_id": "basin-1", "polluted": False}],
-                "basin_assemblies": {"answer": "ok"},
-            }
+class DMF:
+    def run(self, stage_input):
+        return {"active_traces": ["trace-1"], "trace_clusters": ["cluster-1"]}
 
-    class Lucidity:
-        def __init__(self, decision="commit", margin=0.9):
-            self.decision = decision
-            self.margin = margin
 
-        def run(self, stage_input):
-            return (self.decision, self.margin)
+class Binding:
+    def run(self, stage_input):
+        return {"candidate_bindings": [{"binding_id": "bind-1"}]}
 
-    class Projector:
-        def __init__(self):
-            self.calls = 0
 
-        def run(self, stage_input):
-            self.calls += 1
-            return {"projected_answer": "maybe"}
+class ContextOp:
+    def run(self, stage_input):
+        return {
+            "context_frames": [{"frame_id": "ctx-1"}],
+            "scoped_trace_assignments": {"trace-1": "ctx-1"},
+        }
 
-    class Decoder:
-        def run(self, stage_input):
-            if stage_input.get("decision") == "test_consequence":
-                projection = stage_input.get("projection_result") or {}
-                return {"answer": projection.get("projected_answer", "unknown")}
-            return stage_input.get("basin_assemblies", {})
 
-    module.Perception = Perception
-    module.CueEncoder = CueEncoder
-    module.DMF = DMF
-    module.Binding = Binding
-    module.ContextOp = ContextOp
-    module.Interference = Interference
-    module.Lucidity = Lucidity
-    module.Projector = Projector
-    module.Decoder = Decoder
-    sys.modules["pipeline"] = module
-    return module
+class Interference:
+    def run(self, stage_input):
+        return {
+            "interference_edges": ["edge-1"],
+            "active_basins": [{"basin_id": "basin-1", "polluted": False}],
+            "basin_assemblies": {"answer": "ok"},
+        }
+
+
+class Lucidity:
+    def __init__(self, decision="commit", margin=0.9):
+        self.decision = decision
+        self.margin = margin
+
+    def run(self, stage_input):
+        return (self.decision, self.margin)
+
+
+class Projector:
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, stage_input):
+        self.calls += 1
+        return {"projected_answer": "maybe"}
+
+
+class Decoder:
+    def run(self, stage_input):
+        if stage_input.get("decision") == "test_consequence":
+            projection = stage_input.get("projection_result") or {}
+            return {"answer": projection.get("projected_answer", "unknown")}
+        return stage_input.get("basin_assemblies", {})
 
 
 def _load_orchestrator():
-    _install_stub_pipeline()
+    sys.modules.pop("pipeline", None)
     if "orchestrator" in sys.modules:
         del sys.modules["orchestrator"]
     return importlib.import_module("orchestrator")
 
 
-def test_end_to_end_success_path_no_patch():
+def _audit_dirs(base: Path) -> list[Path]:
+    return sorted(path for path in base.iterdir() if path.is_dir())
+
+
+def test_orchestrator_imports_without_pipeline_module():
+    orchestrator_mod = _load_orchestrator()
+    assert orchestrator_mod.TrainingEpisode.__name__ == "TrainingEpisode"
+
+
+def test_end_to_end_success_path_no_patch(tmp_path: Path):
     orchestrator_mod = _load_orchestrator()
     episode = orchestrator_mod.TrainingEpisode(
         episode_id="ep-success",
@@ -101,26 +111,32 @@ def test_end_to_end_success_path_no_patch():
     )
 
     orch = orchestrator_mod.TrainingOrchestrator(
-        perception=orchestrator_mod.Perception(),
-        cue_encoder=orchestrator_mod.CueEncoder(),
-        dmf=orchestrator_mod.DMF(),
-        binding=orchestrator_mod.Binding(),
-        context_op=orchestrator_mod.ContextOp(),
-        interference=orchestrator_mod.Interference(),
-        lucidity=orchestrator_mod.Lucidity(decision="commit", margin=0.9),
-        projector=orchestrator_mod.Projector(),
-        decoder=orchestrator_mod.Decoder(),
+        perception=Perception(),
+        cue_encoder=CueEncoder(),
+        dmf=DMF(),
+        binding=Binding(),
+        context_op=ContextOp(),
+        interference=Interference(),
+        lucidity=Lucidity(decision="commit", margin=0.9),
+        projector=Projector(),
+        decoder=Decoder(),
         episodes=[episode],
         phase=1,
         debug=True,
+        audit_base_dir=tmp_path / "audit",
     )
     orch.run(3)
     status = orch.get_status()
     assert status["patch_history_count"] == 0
     assert status["metrics"]["success_rate"] >= 0.9
+    dirs = _audit_dirs(tmp_path / "audit")
+    assert len(dirs) == 3
+    assert (dirs[0] / "manifest.json").exists()
+    assert (dirs[0] / "README.txt").exists()
+    assert (dirs[0] / "run_log.json").exists()
 
 
-def test_end_to_end_failure_goes_to_replay():
+def test_end_to_end_failure_goes_to_replay(tmp_path: Path):
     orchestrator_mod = _load_orchestrator()
     episode = orchestrator_mod.TrainingEpisode(
         episode_id="ep-fail",
@@ -134,28 +150,32 @@ def test_end_to_end_failure_goes_to_replay():
         metadata={"task_family": "unit"},
     )
     orch = orchestrator_mod.TrainingOrchestrator(
-        perception=orchestrator_mod.Perception(),
-        cue_encoder=orchestrator_mod.CueEncoder(),
-        dmf=orchestrator_mod.DMF(),
-        binding=orchestrator_mod.Binding(),
-        context_op=orchestrator_mod.ContextOp(),
-        interference=orchestrator_mod.Interference(),
-        lucidity=orchestrator_mod.Lucidity(decision="commit", margin=0.9),
-        projector=orchestrator_mod.Projector(),
-        decoder=orchestrator_mod.Decoder(),
+        perception=Perception(),
+        cue_encoder=CueEncoder(),
+        dmf=DMF(),
+        binding=Binding(),
+        context_op=ContextOp(),
+        interference=Interference(),
+        lucidity=Lucidity(decision="commit", margin=0.9),
+        projector=Projector(),
+        decoder=Decoder(),
         episodes=[episode],
         phase=1,
         debug=False,
+        audit_base_dir=tmp_path / "audit",
     )
     orch.run_one_step()
     replay_metrics = orch.failure_replay_store.metrics()
     assert replay_metrics["failure_replay_queue_depth"] >= 1
     assert orch.get_status()["rejected_patch_count"] >= 1
+    dirs = _audit_dirs(tmp_path / "audit")
+    assert len(dirs) == 1
+    assert (dirs[0] / "patch_result.json").exists()
 
 
-def test_projector_runs_only_in_test_consequence_band():
+def test_projector_runs_only_in_test_consequence_band(tmp_path: Path):
     orchestrator_mod = _load_orchestrator()
-    projector = orchestrator_mod.Projector()
+    projector = Projector()
     episode = orchestrator_mod.TrainingEpisode(
         episode_id="ep-mid-margin",
         raw_input="input",
@@ -168,18 +188,95 @@ def test_projector_runs_only_in_test_consequence_band():
         metadata={"task_family": "vision"},
     )
     orch = orchestrator_mod.TrainingOrchestrator(
-        perception=orchestrator_mod.Perception(),
-        cue_encoder=orchestrator_mod.CueEncoder(),
-        dmf=orchestrator_mod.DMF(),
-        binding=orchestrator_mod.Binding(),
-        context_op=orchestrator_mod.ContextOp(),
-        interference=orchestrator_mod.Interference(),
-        lucidity=orchestrator_mod.Lucidity(decision="test_consequence", margin=0.5),
+        perception=Perception(),
+        cue_encoder=CueEncoder(),
+        dmf=DMF(),
+        binding=Binding(),
+        context_op=ContextOp(),
+        interference=Interference(),
+        lucidity=Lucidity(decision="test_consequence", margin=0.5),
         projector=projector,
-        decoder=orchestrator_mod.Decoder(),
+        decoder=Decoder(),
         episodes=[episode],
         phase=1,
         debug=False,
+        audit_base_dir=tmp_path / "audit",
     )
     orch.run_one_step()
     assert projector.calls >= 1
+    assert _audit_dirs(tmp_path / "audit")
+
+
+def test_exception_path_writes_audit(tmp_path: Path):
+    orchestrator_mod = _load_orchestrator()
+    episode = orchestrator_mod.TrainingEpisode(
+        episode_id="ep-exception",
+        raw_input="bad input",
+        modality="text",
+        task_intent="qa",
+        context={},
+        constraints={},
+        expected_output={"answer": "ok"},
+        validator_type="exact_match",
+        metadata={"task_family": "chat"},
+    )
+    orch = orchestrator_mod.TrainingOrchestrator(
+        perception=FailingPerception(),
+        cue_encoder=CueEncoder(),
+        dmf=DMF(),
+        binding=Binding(),
+        context_op=ContextOp(),
+        interference=Interference(),
+        lucidity=Lucidity(decision="commit", margin=0.9),
+        projector=Projector(),
+        decoder=Decoder(),
+        episodes=[episode],
+        audit_base_dir=tmp_path / "audit",
+    )
+
+    with pytest.raises(RuntimeError, match="cannot perceive"):
+        orch.run_one_step()
+
+    dirs = _audit_dirs(tmp_path / "audit")
+    assert len(dirs) == 1
+    manifest = json.loads((dirs[0] / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["action"] == "exception"
+    assert "RuntimeError: cannot perceive bad input" in manifest["error_message"]
+
+
+def test_replay_clear_requires_patch_shadow_and_three_successes():
+    orchestrator_mod = _load_orchestrator()
+    store = orchestrator_mod.FailureReplayStore()
+    run_log = orchestrator_mod.RunLog(
+        episode_id="ep-replay",
+        raw_input="x",
+        evidence_graph={"entities": []},
+        cue_cloud={},
+        active_traces=[],
+        trace_clusters=[],
+        candidate_bindings=[],
+        context_frames=[],
+        scoped_trace_assignments={},
+        interference_edges=[],
+        active_basins=[],
+        basin_assemblies={},
+        lucidity_features={},
+        lucidity_decision="commit",
+        lucidity_margin=0.9,
+        projection_result=None,
+        decoder_output=None,
+        validator_result={},
+        cost_metrics={},
+    )
+
+    store.add_or_refresh(run_log)
+    store.on_patch_promoted("ep-replay", "patch-1")
+    for _ in range(3):
+        store.record_success("ep-replay")
+
+    assert store.try_clear("ep-replay") is False
+    assert store.contains("ep-replay")
+
+    store.on_episode_shadow_passed("ep-replay")
+    assert store.try_clear("ep-replay") is True
+    assert not store.contains("ep-replay")
