@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "build.md",
+                "file": "implementation/generator.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "build"
+              "title": "generator"
             }
           }
         ]
@@ -185,6 +185,10 @@
   },
   "active": "665dad12d0061c82",
   "lastOpenFiles": [
+    "scoped/generator.md",
+    "implementation/generator.md",
+    "implementation",
+    "build.md",
     "to do/cue.md",
     "to do",
     "sparcity.md",
@@ -193,7 +197,6 @@
     "open questions.md",
     "continual learning.md",
     "basins fix.md",
-    "build.md",
     "Zyphra AI papers.md",
     "To build out.md",
     "open/continual learning.md",
@@ -210,7 +213,6 @@
     "scoped/training/training data.md",
     "scoped/training/training orchestrator.md",
     "scoped/training",
-    "scoped/generator.md",
     "scoped/training/training corpus.md",
     "scoped/cue encoder & cue cloud.md",
     "buildguide.md",
