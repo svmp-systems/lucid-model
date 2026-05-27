@@ -75,6 +75,17 @@ class StageResult:
     output_type: str = ""
     audit: AuditEnvelope | None = None
     error_message: str = ""
+    stage_index: int = 0
+    occurrence: int = 1
+
+
+@dataclass(slots=True)
+class StageExecutionRecord:
+    stage_name: StageName | str
+    stage_index: int
+    occurrence: int = 1
+    input_payload: Any = None
+    output_payload: Any = None
 
 
 @runtime_checkable
@@ -110,6 +121,7 @@ class PipelineRun:
     decoder_input: DecoderInput | None = None
     decoder_output: DecoderOutput | None = None
     stage_results: list[StageResult] = field(default_factory=list)
+    stage_records: list[StageExecutionRecord] = field(default_factory=list)
     cost_metrics: CostMetrics = field(default_factory=CostMetrics)
 
     def to_run_log(self) -> RunLog:
