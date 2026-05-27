@@ -1,0 +1,32 @@
+{
+  "candidate_units": [
+    {
+      "unit_id": "u1",
+      "surface": "bank",
+      "kind_hint": "noun",
+      "type_hints": [],
+      "feature_signature": "",
+      "position_or_time": "3",
+      "confidence": 0.92,
+      "salience": 0.8,
+      "uncertainty": null
+    }
+  ],
+  "candidate_regions": [],
+  "candidate_containers": [],
+  "candidate_markers": [],
+  "arrangement_hints": [],
+  "change_hints": [],
+  "grouping_hints": [],
+  "reference_hints": [],
+  "uncertainty_flags": [],
+  "provenance": {
+    "source_id": "fixture",
+    "modality": "text",
+    "timestamp": "",
+    "adapter_version": "0.1.0",
+    "segmentation_pass_id": "",
+    "session_id": "",
+    "extra": {}
+  }
+}

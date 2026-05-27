@@ -185,6 +185,13 @@
   },
   "active": "665dad12d0061c82",
   "lastOpenFiles": [
+    "to do/cue.md",
+    "to do",
+    "sparcity.md",
+    "scoped/training quantization.md",
+    "principle.md",
+    "open questions.md",
+    "continual learning.md",
     "basins fix.md",
     "build.md",
     "Zyphra AI papers.md",
@@ -197,7 +204,6 @@
     "open/open questions.md",
     "open/sparcity.md",
     "plan.md",
-    "to do/cue.md",
     "scoped/training/training quantization.md",
     "scoped/basins.md",
     "scoped/training/training plan.md",
@@ -208,13 +214,6 @@
     "scoped/training/training corpus.md",
     "scoped/cue encoder & cue cloud.md",
     "buildguide.md",
-    "from outside/perception.md",
-    "from outside/projector & decoder.md",
-    "from outside/lucidity.md",
-    "from outside/basins.md",
-    "from outside/interference.md",
-    "from outside/binding & contextop.md",
-    "from outside",
-    "to do"
+    "from outside"
   ]
 }
