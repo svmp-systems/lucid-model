@@ -21,6 +21,7 @@ from pipeline import (
 
 
 @dataclass
+class TrainingEpisode:
     episode_id: str
     raw_input: Any
     modality: str
