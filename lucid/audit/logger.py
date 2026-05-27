@@ -37,6 +37,8 @@ _PIPELINE_STAGE_FIELDS: tuple[tuple[str, str, str], ...] = (
 class StageAuditRef:
     stage_name: str
     file_name: str
+    stage_index: int = 0
+    occurrence: int = 1
     input_hash: str = ""
     output_hash: str = ""
     duration_ms: float = 0.0
@@ -187,7 +189,8 @@ def _build_manifest_summary(manifest: RunAuditManifest) -> dict[str, Any]:
     for ref in manifest.stages:
         mark = "ok" if ref.success else "FAIL"
         ms = f"{ref.duration_ms:.0f}ms" if ref.duration_ms else "-"
-        stage_lines.append(f"  {ref.stage_name:<14} {mark:<4} {ms:>8}")
+        label = ref.stage_name if ref.occurrence <= 1 else f"{ref.stage_name}#{ref.occurrence}"
+        stage_lines.append(f"  {label:<14} {mark:<4} {ms:>8}")
 
     lucidity = manifest.lucidity_decision or "(none)"
     headline = f"{lucidity} · {len(manifest.stages)} stages · {manifest.wall_time_ms:.0f}ms total"
@@ -211,6 +214,8 @@ def _stage_record(
     duration_ms: float,
     success: bool,
     error_message: str,
+    stage_index: int = 0,
+    occurrence: int = 1,
 ) -> dict[str, Any]:
     """On-disk shape: meta + summary first, then input/output for machines."""
     output = envelope.payload.get("output")
@@ -219,6 +224,8 @@ def _stage_record(
         "schema_version": SCHEMA_VERSION,
         "run_id": envelope.run_id,
         "stage_name": envelope.stage_name,
+        "stage_index": stage_index,
+        "occurrence": occurrence,
         "timestamp": envelope.timestamp,
         "adapter_version": envelope.adapter_version,
         "input_hash": envelope.input_hash,
@@ -237,8 +244,10 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _stage_file_name(stage_name: str) -> str:
-    return f"{stage_name}.json"
+def _stage_file_name(stage_name: str, occurrence: int = 1) -> str:
+    if occurrence <= 1:
+        return f"{stage_name}.json"
+    return f"{stage_name}_{occurrence:02d}.json"
 
 
 def _stage_key(name: StageName | str) -> str:
@@ -269,6 +278,9 @@ class AuditLogger:
         stage_name: str,
         stage_input: Any,
         stage_output: Any,
+        file_name: str | None = None,
+        stage_index: int = 0,
+        occurrence: int = 1,
         duration_ms: float = 0.0,
         success: bool = True,
         error_message: str = "",
@@ -298,8 +310,10 @@ class AuditLogger:
             duration_ms=duration_ms,
             success=success,
             error_message=error_message,
+            stage_index=stage_index,
+            occurrence=occurrence,
         )
-        _write_json(run_dir / _stage_file_name(stage_name), record)
+        _write_json(run_dir / (file_name or _stage_file_name(stage_name, occurrence)), record)
         return envelope
 
     def write_pipeline_run(self, run: PipelineRun) -> Path:
@@ -307,53 +321,105 @@ class AuditLogger:
         run_dir = self.run_directory(context)
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        stage_results_by_name = {
-            _stage_key(result.stage_name): result for result in run.stage_results
-        }
-
         refs: list[StageAuditRef] = []
         output_hashes: list[str] = []
 
-        for stage_name, input_attr, output_attr in _PIPELINE_STAGE_FIELDS:
-            stage_input = getattr(run, input_attr)
-            stage_output = getattr(run, output_attr)
-            if stage_input is None and stage_output is None:
-                continue
+        if run.stage_records:
+            for record in run.stage_records:
+                stage_name = _stage_key(record.stage_name)
+                result = None
+                if 0 <= record.stage_index < len(run.stage_results):
+                    candidate = run.stage_results[record.stage_index]
+                    if _stage_key(candidate.stage_name) == stage_name:
+                        result = candidate
 
-            result = stage_results_by_name.get(stage_name)
-            duration_ms = result.duration_ms if result else 0.0
-            success = result.success if result else stage_output is not None
-            error_message = result.error_message if result else ""
+                duration_ms = result.duration_ms if result else 0.0
+                success = result.success if result else record.output_payload is not None
+                error_message = result.error_message if result else ""
+                occurrence = record.occurrence or 1
+                file_name = _stage_file_name(stage_name, occurrence)
 
-            envelope = self.write_stage(
-                run_dir=run_dir,
-                context=context,
-                stage_name=stage_name,
-                stage_input=stage_input,
-                stage_output=stage_output,
-                duration_ms=duration_ms,
-                success=success,
-                error_message=error_message,
-            )
-
-            output_hash = envelope.payload.get("output_hash", "")
-            if output_hash:
-                output_hashes.append(output_hash)
-
-            refs.append(
-                StageAuditRef(
+                envelope = self.write_stage(
+                    run_dir=run_dir,
+                    context=context,
                     stage_name=stage_name,
-                    file_name=_stage_file_name(stage_name),
-                    input_hash=envelope.input_hash,
-                    output_hash=output_hash,
+                    stage_input=record.input_payload,
+                    stage_output=record.output_payload,
+                    file_name=file_name,
+                    stage_index=record.stage_index,
+                    occurrence=occurrence,
                     duration_ms=duration_ms,
                     success=success,
                     error_message=error_message,
                 )
-            )
 
-            if result is not None:
-                result.audit = envelope
+                output_hash = envelope.payload.get("output_hash", "")
+                if output_hash:
+                    output_hashes.append(output_hash)
+
+                refs.append(
+                    StageAuditRef(
+                        stage_name=stage_name,
+                        file_name=file_name,
+                        stage_index=record.stage_index,
+                        occurrence=occurrence,
+                        input_hash=envelope.input_hash,
+                        output_hash=output_hash,
+                        duration_ms=duration_ms,
+                        success=success,
+                        error_message=error_message,
+                    )
+                )
+
+                if result is not None:
+                    result.audit = envelope
+        else:
+            stage_results_by_name = {
+                _stage_key(result.stage_name): result for result in run.stage_results
+            }
+
+            for stage_name, input_attr, output_attr in _PIPELINE_STAGE_FIELDS:
+                stage_input = getattr(run, input_attr)
+                stage_output = getattr(run, output_attr)
+                if stage_input is None and stage_output is None:
+                    continue
+
+                result = stage_results_by_name.get(stage_name)
+                duration_ms = result.duration_ms if result else 0.0
+                success = result.success if result else stage_output is not None
+                error_message = result.error_message if result else ""
+                file_name = _stage_file_name(stage_name)
+
+                envelope = self.write_stage(
+                    run_dir=run_dir,
+                    context=context,
+                    stage_name=stage_name,
+                    stage_input=stage_input,
+                    stage_output=stage_output,
+                    file_name=file_name,
+                    duration_ms=duration_ms,
+                    success=success,
+                    error_message=error_message,
+                )
+
+                output_hash = envelope.payload.get("output_hash", "")
+                if output_hash:
+                    output_hashes.append(output_hash)
+
+                refs.append(
+                    StageAuditRef(
+                        stage_name=stage_name,
+                        file_name=file_name,
+                        input_hash=envelope.input_hash,
+                        output_hash=output_hash,
+                        duration_ms=duration_ms,
+                        success=success,
+                        error_message=error_message,
+                    )
+                )
+
+                if result is not None:
+                    result.audit = envelope
 
         lucidity_decision = ""
         if run.lucidity_output is not None:
