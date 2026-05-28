@@ -1,5 +1,5 @@
 # Runtime: no third-party packages (stdlib only; LLM perception uses urllib).
-# Editable install registers lucid-run, lucid-perceive, lucid-gen, lucid-inspect.
+# Editable install registers lucid, lucid-run, lucid-gen, and lucid-inspect.
 -e .
 
 # Dev / test (matches pyproject.toml [project.optional-dependencies].dev)
