@@ -8,7 +8,7 @@ from typing import Any
 from lucid.ir.perception import PerceptualEvidenceGraph
 from lucid.ir.serde import to_dict
 
-from lucid.perception.schema import _LIST_KEYS
+from lucid.cognition.input.perception.schema import _LIST_KEYS
 
 
 def _is_empty_value(value: Any) -> bool:

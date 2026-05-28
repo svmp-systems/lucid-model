@@ -10,7 +10,6 @@
 
 # dont touch [README.md](http://README.md) and superintelligence/implementation/* unless explicitly asked to do so.
 
+# do not randomly create folders. use accurate and adept folders within the existing folder structure.
 
-
-# do not randomly create folders. use accurate and adept folders within the existing folder structure. 
-
+# make every module auditable and connected to lucid-model/lucid/audit/

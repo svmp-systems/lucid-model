@@ -6,8 +6,13 @@ import pytest
 
 from lucid.ir.common import Modality
 from lucid.ir.perception import PerceptionInput
-from lucid.perception import PerceptionConfig, empty_graph_template, graph_from_dict, perceive
-from lucid.perception.schema import (
+from lucid.cognition.input.perception import (
+    PerceptionConfig,
+    empty_graph_template,
+    graph_from_dict,
+    perceive,
+)
+from lucid.cognition.input.perception.schema import (
     PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA,
     build_system_prompt,
     normalize_graph_dict,
@@ -137,7 +142,7 @@ def test_load_dotenv_sets_key(tmp_path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("OPENAI_API_KEY=test-key-from-dotenv\n", encoding="utf-8")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("LUCID_PERCEPTION_API_KEY", raising=False)
-    from lucid.perception.config import PerceptionConfig
+    from lucid.cognition.input.perception.config import PerceptionConfig
 
     cfg = PerceptionConfig.from_env()
     assert cfg.api_key == "test-key-from-dotenv"
@@ -145,7 +150,7 @@ def test_load_dotenv_sets_key(tmp_path, monkeypatch) -> None:
 
 def test_require_text_evidence_rejects_empty_graph() -> None:
     from lucid.ir.perception import PerceptualEvidenceGraph
-    from lucid.perception.llm import _require_text_evidence
+    from lucid.cognition.input.perception.llm import _require_text_evidence
 
     inp = PerceptionInput(raw_payload="go to the bank", modality=Modality.TEXT)
     with pytest.raises(ValueError, match="empty evidence graph"):
@@ -153,7 +158,7 @@ def test_require_text_evidence_rejects_empty_graph() -> None:
 
 
 def test_empty_graph_retry_message_mentions_units() -> None:
-    from lucid.perception.schema import empty_graph_retry_message
+    from lucid.cognition.input.perception.schema import empty_graph_retry_message
 
     msg = empty_graph_retry_message()
     assert "candidate_units" in msg
@@ -161,7 +166,7 @@ def test_empty_graph_retry_message_mentions_units() -> None:
 
 
 def test_build_user_message_includes_text_to_analyze() -> None:
-    from lucid.perception.schema import build_user_message
+    from lucid.cognition.input.perception.schema import build_user_message
 
     body = build_user_message(PerceptionInput(raw_payload="go to the bank", modality=Modality.TEXT))
     assert "text_to_analyze" in body
@@ -169,7 +174,7 @@ def test_build_user_message_includes_text_to_analyze() -> None:
 
 
 def test_build_user_message_includes_runtime_context() -> None:
-    from lucid.perception.schema import build_user_message
+    from lucid.cognition.input.perception.schema import build_user_message
 
     body = json.loads(
         build_user_message(
@@ -189,7 +194,7 @@ def test_system_prompt_requires_non_empty_units() -> None:
 
 
 def test_llm_retries_on_empty_graph(monkeypatch) -> None:
-    from lucid.perception import llm as llm_mod
+    from lucid.cognition.input.perception import llm as llm_mod
 
     calls: list[int] = []
 
@@ -227,7 +232,7 @@ def test_llm_retries_on_empty_graph(monkeypatch) -> None:
 
 
 def test_llm_retries_on_too_shallow_text_graph(monkeypatch) -> None:
-    from lucid.perception import llm as llm_mod
+    from lucid.cognition.input.perception import llm as llm_mod
 
     calls: list[int] = []
 
@@ -267,7 +272,7 @@ def test_llm_retries_on_too_shallow_text_graph(monkeypatch) -> None:
 
 
 def test_llm_writes_audit_with_raw_and_normalized_graph(monkeypatch, tmp_path) -> None:
-    from lucid.perception import llm as llm_mod
+    from lucid.cognition.input.perception import llm as llm_mod
 
     def fake_chat(_cfg, _messages):
         return json.dumps(
@@ -293,10 +298,13 @@ def test_llm_writes_audit_with_raw_and_normalized_graph(monkeypatch, tmp_path) -
     assert len(audit_files) == 1
     audit = json.loads(audit_files[0].read_text(encoding="utf-8"))
     assert audit["success"] is True
+    assert audit["schema_version"] == 1
+    assert audit["stage_name"] == "perception_llm"
     assert audit["input"]["input_hash"] == graph.provenance.extra["input_hash"]
-    assert audit["attempts"][0]["raw_response"]
-    assert audit["graph"]["candidate_units"][0]["surface"] == "bank"
-    assert audit["messages"][1]["content"].find("runtime_context") >= 0
+    assert graph.provenance.extra["perception_audit_path"] == str(audit_files[0])
+    assert audit["output"]["attempts"][0]["raw_response"]
+    assert audit["output"]["graph"]["candidate_units"][0]["surface"] == "bank"
+    assert audit["output"]["messages"][1]["content"].find("runtime_context") >= 0
 
 
 def test_compact_output_omits_empty_lists_and_defaults() -> None:
@@ -307,7 +315,7 @@ def test_compact_output_omits_empty_lists_and_defaults() -> None:
         UncertaintyFlag,
     )
     from lucid.ir.common import UncertaintySeverity
-    from lucid.perception.compact import compact_graph
+    from lucid.cognition.input.perception.compact import compact_graph
 
     graph = PerceptualEvidenceGraph(
         candidate_units=[CandidateUnit(unit_id="u_bank", surface="bank", kind_hint="span")],

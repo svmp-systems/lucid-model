@@ -82,9 +82,10 @@ class Decoder:
 
 def _load_orchestrator():
     sys.modules.pop("pipeline", None)
-    if "orchestrator" in sys.modules:
-        del sys.modules["orchestrator"]
-    return importlib.import_module("orchestrator")
+    module_name = "lucid.training.orchestrator.orchestrator"
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+    return importlib.import_module(module_name)
 
 
 def _audit_dirs(base: Path) -> list[Path]:
