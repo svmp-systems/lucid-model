@@ -68,3 +68,4 @@ class ContextOpOutput:
     local_basin_pressures: list[LocalBasinPressure] = field(default_factory=list)
     ambiguity_policy: AmbiguityPolicy = AmbiguityPolicy.PRESERVE_PLURAL
     compute_policy: ComputePolicy = field(default_factory=ComputePolicy)
+    audit_notes: list[str] = field(default_factory=list)
