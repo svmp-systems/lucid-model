@@ -1,4 +1,4 @@
-"""Perception: raw input → PerceptualEvidenceGraph (LLM by default)."""
+"""Perception: raw input → PerceptualEvidenceGraph (evidence only, no meaning)."""
 
 from __future__ import annotations
 
@@ -28,19 +28,4 @@ def perceive(
     return perceive_text(inp)
 
 
-from lucid.perception.schema import (
-    PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA,
-    empty_graph_template,
-    normalize_graph_dict,
-    structured_response_format,
-)
-
-__all__ = [
-    "PerceptionConfig",
-    "perceive",
-    "graph_from_dict",
-    "PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA",
-    "empty_graph_template",
-    "normalize_graph_dict",
-    "structured_response_format",
-]
+__all__ = ["PerceptionConfig", "perceive", "graph_from_dict"]

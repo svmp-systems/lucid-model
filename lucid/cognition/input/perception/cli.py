@@ -15,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="lucid-perceive")
     p.add_argument("text", nargs="?", help="Raw text (or stdin)")
     p.add_argument("--modality", default="text", choices=[m.value for m in Modality])
-    p.add_argument("--backend", default="", choices=["", "rule", "llm"], help="default: llm")
+    p.add_argument("--backend", default="", choices=["", "rule", "llm"])
     args = p.parse_args(argv)
 
     raw = args.text if args.text is not None else sys.stdin.read().strip()

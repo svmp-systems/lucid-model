@@ -19,8 +19,7 @@ from lucid.ir.interference import InterferenceInput, InterferenceOutput
 from lucid.ir.lucidity import CommittedState, DecoderPolicy, LucidityInput, LucidityOutput
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
-from lucid.perception.config import PerceptionConfig
-from lucid.perception.engine import perceive as run_perception
+from lucid.perception import PerceptionConfig, perceive as run_perception
 
 
 def _lucidity_target_to_decision(target: str) -> LucidityDecision:

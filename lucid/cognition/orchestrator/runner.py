@@ -32,7 +32,7 @@ from lucid.ir.pipeline import (
 from lucid.ir.projector import ProjectorInput
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
-from lucid.perception.config import PerceptionConfig
+from lucid.perception import PerceptionConfig
 
 from .stages import FunctionStage, Stage
 from .stub_stages import build_default_stage_fns

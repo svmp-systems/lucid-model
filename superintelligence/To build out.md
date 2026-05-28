@@ -1,5 +1,5 @@
 
-- [ ] Perception layers 
+- [x] Perception layers 
 - [ ] cue encoder 
 - [ ] primitive trace bank & relational trace bank 
 - [ ] binding 

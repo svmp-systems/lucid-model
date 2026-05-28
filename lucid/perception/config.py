@@ -1,38 +1,31 @@
-"""Perception backend configuration (env + dataclass)."""
+"""Perception backend settings."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 
-
-def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default).strip()
+from lucid.perception.env import load_dotenv
 
 
 @dataclass(slots=True)
 class PerceptionConfig:
-    """How perception runs. Default ``rule`` works offline; ``llm`` calls an API."""
-
-    backend: str = "rule"  # rule | llm
+    backend: str = "llm"  # llm (default) | rule
     model: str = "gpt-4o-mini"
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
-    temperature: float = 0.0
     timeout_s: float = 90.0
-    max_retries: int = 1
-    adapter_version: str = "perception-0.1.0"
+    use_json_schema: bool = True  # OpenAI-style structured output when supported
 
     @classmethod
     def from_env(cls) -> PerceptionConfig:
-        backend = _env("LUCID_PERCEPTION_BACKEND", "rule").lower()
+        load_dotenv()
         return cls(
-            backend=backend,
-            model=_env("LUCID_PERCEPTION_MODEL", "gpt-4o-mini"),
-            base_url=_env("LUCID_PERCEPTION_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-            api_key=_env("LUCID_PERCEPTION_API_KEY") or _env("OPENAI_API_KEY"),
-            temperature=float(_env("LUCID_PERCEPTION_TEMPERATURE", "0")),
-            timeout_s=float(_env("LUCID_PERCEPTION_TIMEOUT_S", "90")),
-            max_retries=int(_env("LUCID_PERCEPTION_MAX_RETRIES", "1")),
-            adapter_version=_env("LUCID_PERCEPTION_ADAPTER_VERSION", "perception-0.1.0"),
+            backend=os.environ.get("LUCID_PERCEPTION_BACKEND", "llm").strip().lower(),
+            model=os.environ.get("LUCID_PERCEPTION_MODEL", "gpt-4o-mini"),
+            base_url=os.environ.get("LUCID_PERCEPTION_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            api_key=(os.environ.get("LUCID_PERCEPTION_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""),
+            timeout_s=float(os.environ.get("LUCID_PERCEPTION_TIMEOUT_S", "90")),
+            use_json_schema=os.environ.get("LUCID_PERCEPTION_USE_JSON_SCHEMA", "1").strip()
+            not in ("0", "false", "no"),
         )
