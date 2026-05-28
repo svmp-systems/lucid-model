@@ -1,4 +1,4 @@
-Short-term perception: **LLM default** (`lucid/perception/`).
+Short-term perception: **LLM default** (`lucid/cognition/input/perception/`).
 
 - **Input (prompt):** raw payload + short task instructions only.
 - **Output (API):** `response_format: json_schema` with `PerceptualEvidenceGraph` schema; falls back to `json_object` if unsupported.
