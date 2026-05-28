@@ -41,7 +41,7 @@ def perceive_llm(inp: PerceptionInput, cfg: PerceptionConfig) -> PerceptualEvide
             graph.provenance.extra["llm_attempt"] = attempt + 1
             _require_text_evidence(inp, graph)
             return graph
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
             last_err = exc
             messages.append({"role": "user", "content": _retry_message(exc, inp)})
 

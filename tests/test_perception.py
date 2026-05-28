@@ -25,6 +25,29 @@ def test_rule_text_spans_and_polysemy() -> None:
     assert graph.uncertainty_flags
 
 
+def test_rule_text_my_is_marker_linked_to_mom() -> None:
+    inp = PerceptionInput(
+        raw_payload="my mom is cooking curd rice with potato fries",
+        modality=Modality.TEXT,
+    )
+    graph = perceive(inp, config=PerceptionConfig(backend="rule"))
+    assert not any(u.surface.lower() == "my" for u in graph.candidate_units)
+    m_my = next(m for m in graph.candidate_markers if m.surface == "my")
+    assert "u_mom" in m_my.possible_target_unit_ids
+    assert any(m.surface == "is" for m in graph.candidate_markers)
+    assert any(m.surface == "with" for m in graph.candidate_markers)
+
+
+def test_rule_text_regions_and_reference() -> None:
+    inp = PerceptionInput(
+        raw_payload="i found money while kayaking and deposited it at the bank",
+        modality=Modality.TEXT,
+    )
+    graph = perceive(inp, config=PerceptionConfig(backend="rule"))
+    assert graph.candidate_regions
+    assert graph.reference_hints
+
+
 def test_rule_grid_change_hints() -> None:
     inp = PerceptionInput(
         raw_payload={"input": [[0, 1, 0], [0, 0, 0]], "output": [[0, 0, 1], [0, 0, 0]]},
@@ -54,11 +77,34 @@ def test_normalize_coerces_string_units() -> None:
     assert graph["candidate_units"][1]["unit_id"] == "u_bank"
 
 
+def test_normalize_repairs_region_id_alias() -> None:
+    graph = normalize_graph_dict(
+        {
+            "candidate_regions": [
+                {"id": "r_main", "role_hint": "main_clause", "member_unit_ids": ["u_mom"]}
+            ]
+        }
+    )
+    assert graph["candidate_regions"][0]["region_id"] == "r_main"
+    graph_from_dict(graph, modality=Modality.TEXT)
+
+
+def test_graph_from_dict_accepts_region_with_id_alias() -> None:
+    graph = graph_from_dict(
+        {
+            "candidate_units": [{"unit_id": "u_mom", "surface": "mom"}],
+            "candidate_regions": [{"id": "r_cooking", "role_hint": "activity", "member_unit_ids": ["u_mom"]}],
+        },
+        modality=Modality.TEXT,
+    )
+    assert graph.candidate_regions[0].region_id == "r_cooking"
+
+
 def test_system_prompt_does_not_embed_schema() -> None:
     prompt = build_system_prompt()
     assert "JSON SCHEMA" not in prompt
     assert "$defs" not in prompt
-    assert len(prompt) < 700
+    assert len(prompt) < 1200
 
 
 def test_structured_response_format_carries_schema() -> None:
@@ -119,9 +165,10 @@ def test_build_user_message_includes_text_to_analyze() -> None:
 
 def test_system_prompt_requires_non_empty_units() -> None:
     prompt = build_system_prompt()
-    assert "MUST" in prompt or "must" in prompt.lower()
+    assert "Required" in prompt or "must" in prompt.lower()
     assert "candidate_units" in prompt
-    assert "all-empty" in prompt.lower() or "empty" in prompt.lower()
+    assert "reference_hints" in prompt
+    assert "empty" in prompt.lower()
 
 
 def test_llm_retries_on_empty_graph(monkeypatch) -> None:
@@ -152,6 +199,34 @@ def test_llm_retries_on_empty_graph(monkeypatch) -> None:
     graph = llm_mod.perceive_llm(inp, PerceptionConfig(backend="llm", api_key="test-key", use_json_schema=False))
     assert len(calls) == 2
     assert graph.candidate_units[0].surface == "bank"
+
+
+def test_compact_output_omits_empty_lists_and_defaults() -> None:
+    from lucid.ir.perception import (
+        CandidateMarker,
+        CandidateUnit,
+        PerceptualEvidenceGraph,
+        UncertaintyFlag,
+    )
+    from lucid.ir.common import UncertaintySeverity
+    from lucid.perception.compact import compact_graph
+
+    graph = PerceptualEvidenceGraph(
+        candidate_units=[CandidateUnit(unit_id="u_bank", surface="bank", kind_hint="span")],
+        candidate_markers=[CandidateMarker(marker_id="m_in", surface="in")],
+        uncertainty_flags=[
+            UncertaintyFlag(
+                target_id="u_bank",
+                uncertainty_type="polysemy",
+                severity=UncertaintySeverity.MEDIUM,
+            )
+        ],
+    )
+    compact = compact_graph(graph)
+    assert "candidate_units" in compact
+    assert "candidate_regions" not in compact
+    assert compact["candidate_units"][0] == {"unit_id": "u_bank", "surface": "bank", "kind_hint": "span"}
+    assert "confidence" not in compact["candidate_units"][0]
 
 
 def test_llm_requires_api_key() -> None:

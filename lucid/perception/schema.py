@@ -149,20 +149,27 @@ PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA: dict[str, Any] = {
 
 _SYSTEM_PROMPT = (
     "Perception stage: extract surface evidence from the user message. "
-    "For text payloads you MUST populate candidate_units: one entry per substantive word "
-    "(nouns, verbs, adjectives, adverbs) and multi-word phrases when useful. "
-    "Add candidate_markers for function words that structure the sentence (in, while, which, and). "
-    "Add uncertainty_flags for ambiguous terms (e.g. bank). "
-    "Other list fields stay [] unless the input clearly supports them. "
-    "An all-empty graph (every list []) is invalid when payload text is non-empty. "
+    "Required for non-empty text: "
+    "candidate_units = content words only (nouns, main verbs, adjectives, adverbs); "
+    "candidate_markers = every structural/function token, including "
+    "possessives and determiners (my, the, a), prepositions (in, with, at), "
+    "copulas/auxiliaries (is, are, was), conjunctions (and), subordinators (while, which). "
+    "Do not omit surface tokens. Never put my/the/a in candidate_units. "
+    "For possessives/determiners, set possible_target_unit_ids to the following noun unit. "
+    "Also extract when supported: "
+    "candidate_regions (e.g. main_clause vs relative_clause with member_unit_ids), "
+    "reference_hints (e.g. deposited/placed/it -> earlier noun like money, reference_type object_carryover), "
+    "arrangement_hints (e.g. while subordinate_to found event, hint_type temporal_subordinate), "
+    "uncertainty_flags for ambiguous terms (e.g. bank). "
+    "Use [] only for categories with no evidence (change_hints for plain text, etc.). "
     "unit_id like u_bank; never trace ids or resolved senses. Do not interpret or answer."
 )
 
 _EMPTY_GRAPH_RETRY = (
     "Your last response had empty candidate_units and candidate_markers but the payload "
-    "contains text. Re-analyze the payload and return candidate_units for each substantive "
-    "word (e.g. for 'go to the bank' include u_go, u_bank at minimum). Keep other lists [] "
-    "unless supported. Flag polysemy on bank."
+    "contains text. Re-analyze: substantive words as candidate_units, markers as candidate_markers. "
+    "If there are two events (found vs deposited) add candidate_regions and reference_hints. "
+    "Flag polysemy on bank."
 )
 
 
@@ -174,6 +181,14 @@ def _slug(surface: str) -> str:
     import re
 
     return re.sub(r"[^a-z0-9]+", "_", surface.lower()).strip("_")[:32] or "span"
+
+
+def _first_str(item: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _coerce_list_items(key: str, items: list[Any]) -> list[dict[str, Any]]:
@@ -190,6 +205,8 @@ def _coerce_list_items(key: str, items: list[Any]) -> list[dict[str, Any]]:
                 out.append({"unit_id": f"u_{low}", "surface": text, "kind_hint": "span"})
             elif key == "candidate_markers":
                 out.append({"marker_id": f"m_{low}", "surface": text})
+            elif key == "candidate_regions":
+                out.append({"region_id": f"r_{low}", "role_hint": text})
             elif key == "uncertainty_flags":
                 out.append(
                     {
@@ -205,6 +222,69 @@ def _coerce_list_items(key: str, items: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _repair_item(key: str, item: dict[str, Any], index: int) -> dict[str, Any] | None:
+    """Fill missing required ids and common aliases so from_dict succeeds."""
+    item = dict(item)
+
+    if key == "candidate_units":
+        if not item.get("unit_id"):
+            surface = _first_str(item, "surface", "text", "name")
+            item["unit_id"] = _first_str(item, "unit_id", "id", "unitId") or (
+                f"u_{_slug(surface)}" if surface else f"u_{index}"
+            )
+    elif key == "candidate_regions":
+        if "members" in item and "member_unit_ids" not in item:
+            item["member_unit_ids"] = item["members"]
+        if not item.get("region_id"):
+            role = _first_str(item, "role_hint", "role", "name")
+            item["region_id"] = _first_str(item, "region_id", "id", "regionId") or (
+                f"r_{_slug(role)}" if role else f"r_{index}"
+            )
+    elif key == "candidate_markers":
+        if not item.get("marker_id"):
+            surface = _first_str(item, "surface", "text")
+            item["marker_id"] = _first_str(item, "marker_id", "id", "markerId") or (
+                f"m_{_slug(surface)}" if surface else f"m_{index}"
+            )
+    elif key == "candidate_containers":
+        if not item.get("container_id"):
+            item["container_id"] = _first_str(item, "container_id", "id", "containerId") or f"c_{index}"
+    elif key == "grouping_hints":
+        if not item.get("group_id"):
+            item["group_id"] = _first_str(item, "group_id", "id", "groupId") or f"g_{index}"
+    elif key == "change_hints":
+        if not _first_str(item, "change_type", "type"):
+            return None
+        if not item.get("change_type"):
+            item["change_type"] = _first_str(item, "change_type", "type")
+    elif key == "arrangement_hints":
+        if not all(
+            _first_str(item, field)
+            for field in ("hint_type", "source_unit_id", "target_unit_id")
+        ):
+            return None
+    elif key == "reference_hints":
+        if not _first_str(item, "source_unit_id", "source", "sourceId"):
+            return None
+        if not _first_str(item, "target_unit_id", "target", "targetId"):
+            return None
+        if not item.get("source_unit_id"):
+            item["source_unit_id"] = _first_str(item, "source_unit_id", "source", "sourceId")
+        if not item.get("target_unit_id"):
+            item["target_unit_id"] = _first_str(item, "target_unit_id", "target", "targetId")
+    elif key == "uncertainty_flags":
+        if not _first_str(item, "target_id", "target", "id"):
+            return None
+        if not _first_str(item, "uncertainty_type", "type"):
+            return None
+        if not item.get("target_id"):
+            item["target_id"] = _first_str(item, "target_id", "target", "id")
+        if not item.get("uncertainty_type"):
+            item["uncertainty_type"] = _first_str(item, "uncertainty_type", "type")
+
+    return item
+
+
 def normalize_graph_dict(data: dict[str, Any]) -> dict[str, Any]:
     """Post-output: ensure all list fields exist; coerce sloppy model shapes."""
     if not isinstance(data, dict):
@@ -216,7 +296,12 @@ def normalize_graph_dict(data: dict[str, Any]) -> dict[str, Any]:
             continue
         if not isinstance(value, list):
             raise ValueError(f"{key} must be an array")
-        out[key] = _coerce_list_items(key, value)
+        repaired: list[dict[str, Any]] = []
+        for index, item in enumerate(_coerce_list_items(key, value)):
+            fixed = _repair_item(key, item, index)
+            if fixed is not None:
+                repaired.append(fixed)
+        out[key] = repaired
     return out
 
 

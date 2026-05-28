@@ -28,6 +28,7 @@ def perceive(
     return perceive_text(inp)
 
 
+from lucid.perception.compact import compact_graph, to_compact_json
 from lucid.perception.schema import (
     PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA,
     empty_graph_template,
@@ -39,6 +40,8 @@ __all__ = [
     "PerceptionConfig",
     "perceive",
     "graph_from_dict",
+    "compact_graph",
+    "to_compact_json",
     "PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA",
     "empty_graph_template",
     "normalize_graph_dict",

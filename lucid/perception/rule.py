@@ -1,4 +1,4 @@
-"""Offline perception fallback — tokens, markers, grid cells."""
+"""Offline perception fallback — tokens, markers, regions, references."""
 
 from __future__ import annotations
 
@@ -6,16 +6,65 @@ import re
 
 from lucid.ir.common import Modality, UncertaintySeverity
 from lucid.ir.perception import (
+    ArrangementHint,
     CandidateMarker,
+    CandidateRegion,
     CandidateUnit,
     ChangeHint,
     PerceptionInput,
     PerceptualEvidenceGraph,
+    ReferenceHint,
     UncertaintyFlag,
 )
 
-_MARKERS = frozenset({"while", "which", "that", "in", "and", "later", "after", "before"})
+_MARKERS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "my",
+        "your",
+        "his",
+        "her",
+        "its",
+        "our",
+        "their",
+        "this",
+        "that",
+        "these",
+        "those",
+        "is",
+        "are",
+        "was",
+        "were",
+        "am",
+        "be",
+        "been",
+        "being",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "with",
+        "for",
+        "and",
+        "or",
+        "but",
+        "while",
+        "which",
+        "that",
+        "later",
+        "after",
+        "before",
+    }
+)
+_DETERMINERS = frozenset(
+    {"a", "an", "the", "my", "your", "his", "her", "its", "our", "their", "this", "that", "these", "those"}
+)
 _POLYSEMY = frozenset({"bank", "bark", "match", "spring", "safe", "vault"})
+_DEPOSIT_VERBS = frozenset({"deposited", "placed", "put", "stored", "left"})
+_MONEY_NOUNS = frozenset({"money", "cash", "coins", "funds", "bills", "savings"})
 
 
 def perceive_text(inp: PerceptionInput) -> PerceptualEvidenceGraph:
@@ -25,24 +74,40 @@ def perceive_text(inp: PerceptionInput) -> PerceptualEvidenceGraph:
     graph.provenance.modality = Modality.TEXT
     graph.provenance.extra["backend"] = "rule"
 
-    for m in re.finditer(r"\b[A-Za-z']+\b", text):
-        word = m.group(0)
-        low = word.lower()
+    unit_ids: list[str] = []
+    unit_by_low: dict[str, str] = {}
+    tokens = [(m.group(0), m.start(), m.group(0).lower()) for m in re.finditer(r"\b[A-Za-z']+\b", text)]
+
+    for index, (word, start, low) in enumerate(tokens):
         if low in _MARKERS:
+            targets: list[str] = []
+            if low in _DETERMINERS:
+                for next_word, _, next_low in tokens[index + 1 :]:
+                    if next_low not in _MARKERS:
+                        targets.append(f"u_{next_low}")
+                        break
             graph.candidate_markers.append(
-                CandidateMarker(marker_id=f"m_{low}", surface=low, confidence=0.9)
+                CandidateMarker(
+                    marker_id=f"m_{low}",
+                    surface=low,
+                    possible_target_unit_ids=targets,
+                    confidence=0.9,
+                )
             )
             continue
         uid = f"u_{low}"
-        graph.candidate_units.append(
-            CandidateUnit(
-                unit_id=uid,
-                surface=word,
-                kind_hint="span",
-                position_or_time=str(m.start()),
-                confidence=0.9,
+        if low not in unit_by_low:
+            unit_by_low[low] = uid
+            unit_ids.append(uid)
+            graph.candidate_units.append(
+                CandidateUnit(
+                    unit_id=uid,
+                    surface=word,
+                    kind_hint="span",
+                    position_or_time=str(start),
+                    confidence=0.9,
+                )
             )
-        )
         if low in _POLYSEMY:
             graph.uncertainty_flags.append(
                 UncertaintyFlag(
@@ -51,6 +116,49 @@ def perceive_text(inp: PerceptionInput) -> PerceptualEvidenceGraph:
                     severity=UncertaintySeverity.MEDIUM,
                 )
             )
+
+    if unit_ids:
+        mid = max(1, len(unit_ids) // 2)
+        graph.candidate_regions.append(
+            CandidateRegion(
+                region_id="r_main",
+                role_hint="main_clause",
+                member_unit_ids=unit_ids[:mid],
+                confidence=0.75,
+            )
+        )
+        if any(m.surface in ("which", "that", "while") for m in graph.candidate_markers):
+            graph.candidate_regions.append(
+                CandidateRegion(
+                    region_id="r_sub",
+                    role_hint="relative_clause",
+                    member_unit_ids=unit_ids[mid:],
+                    confidence=0.7,
+                )
+            )
+
+    placed_uid = next((unit_by_low[v] for v in _DEPOSIT_VERBS if v in unit_by_low), None)
+    money_uid = next((unit_by_low[v] for v in _MONEY_NOUNS if v in unit_by_low), None)
+    if placed_uid and money_uid:
+        graph.reference_hints.append(
+            ReferenceHint(
+                source_unit_id=placed_uid,
+                target_unit_id=money_uid,
+                reference_type="object_carryover",
+                confidence=0.72,
+            )
+        )
+
+    if "m_while" in {m.marker_id for m in graph.candidate_markers} and unit_ids:
+        graph.arrangement_hints.append(
+            ArrangementHint(
+                hint_type="temporal_subordinate",
+                source_unit_id="m_while",
+                target_unit_id=unit_ids[0],
+                weight=0.8,
+            )
+        )
+
     return graph
 
 
