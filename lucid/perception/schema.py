@@ -158,7 +158,8 @@ _SYSTEM_PROMPT = (
     "For possessives/determiners, set possible_target_unit_ids to the following noun unit. "
     "Also extract when supported: "
     "candidate_regions (e.g. main_clause vs relative_clause with member_unit_ids), "
-    "reference_hints (e.g. deposited/placed/it -> earlier noun like money, reference_type object_carryover), "
+    "reference_hints (e.g. deposited/placed/it -> earlier noun like money, "
+    "reference_type object_carryover), "
     "arrangement_hints (e.g. while subordinate_to found event, hint_type temporal_subordinate), "
     "uncertainty_flags for ambiguous terms (e.g. bank). "
     "Use [] only for categories with no evidence (change_hints for plain text, etc.). "
@@ -167,7 +168,8 @@ _SYSTEM_PROMPT = (
 
 _EMPTY_GRAPH_RETRY = (
     "Your last response had empty candidate_units and candidate_markers but the payload "
-    "contains text. Re-analyze: substantive words as candidate_units, markers as candidate_markers. "
+    "contains text. Re-analyze: substantive words as candidate_units, "
+    "markers as candidate_markers. "
     "If there are two events (found vs deposited) add candidate_regions and reference_hints. "
     "Flag polysemy on bank."
 )
@@ -248,7 +250,9 @@ def _repair_item(key: str, item: dict[str, Any], index: int) -> dict[str, Any] |
             )
     elif key == "candidate_containers":
         if not item.get("container_id"):
-            item["container_id"] = _first_str(item, "container_id", "id", "containerId") or f"c_{index}"
+            item["container_id"] = (
+                _first_str(item, "container_id", "id", "containerId") or f"c_{index}"
+            )
     elif key == "grouping_hints":
         if not item.get("group_id"):
             item["group_id"] = _first_str(item, "group_id", "id", "groupId") or f"g_{index}"
@@ -321,17 +325,22 @@ def graph_has_text_evidence(graph: object) -> bool:
     return bool(units or markers)
 
 
-def build_user_message(inp: PerceptionInput) -> str:
+def build_user_message(inp: PerceptionInput, *, context: Any = None) -> str:
     import json
 
     modality = inp.modality.value if hasattr(inp.modality, "value") else str(inp.modality)
     body: dict[str, Any] = {
         "modality": modality,
         "payload": inp.raw_payload,
-        "task": "emit PerceptualEvidenceGraph JSON; candidate_units must not be empty for non-empty text",
+        "task": (
+            "emit PerceptualEvidenceGraph JSON; candidate_units must not be empty "
+            "for non-empty text"
+        ),
     }
     if modality == "text" and isinstance(inp.raw_payload, str):
         body["text_to_analyze"] = inp.raw_payload
+    if context:
+        body["runtime_context"] = context
     if inp.prior_context:
         body["prior_context"] = inp.prior_context
     if inp.task_intent_hint is not None:
@@ -347,10 +356,10 @@ def empty_graph_retry_message() -> str:
     return _EMPTY_GRAPH_RETRY
 
 
-def build_messages(inp: PerceptionInput) -> list[dict[str, str]]:
+def build_messages(inp: PerceptionInput, *, context: Any = None) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": build_system_prompt()},
-        {"role": "user", "content": build_user_message(inp)},
+        {"role": "user", "content": build_user_message(inp, context=context)},
     ]
 
 

@@ -22,7 +22,7 @@ def perceive(
     cfg = config or PerceptionConfig.from_env()
     modality = inp.modality if isinstance(inp.modality, Modality) else Modality(str(inp.modality))
     if cfg.backend == "llm":
-        return perceive_llm(inp, cfg)
+        return perceive_llm(inp, cfg, context=context)
     if modality == Modality.GRID:
         return perceive_grid(inp)
     return perceive_text(inp)

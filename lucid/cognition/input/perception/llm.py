@@ -1,4 +1,4 @@
-"""Re-export — canonical implementation: ``lucid.perception.llm``."""
+"""Compatibility wrapper for ``lucid.perception.llm``."""
 
 from lucid.perception.llm import perceive_llm
 

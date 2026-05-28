@@ -11,6 +11,7 @@ from typing import Any
 from lucid.ir.common import Modality
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 
+from lucid.perception.audit import PerceptionAuditLogger, perception_run_id, payload_hash, utc_now
 from lucid.perception.config import PerceptionConfig
 from lucid.perception.parse import graph_from_dict
 from lucid.perception.schema import (
@@ -24,28 +25,59 @@ from lucid.perception.schema import (
 _MAX_ATTEMPTS = 3
 
 
-def perceive_llm(inp: PerceptionInput, cfg: PerceptionConfig) -> PerceptualEvidenceGraph:
+def perceive_llm(
+    inp: PerceptionInput,
+    cfg: PerceptionConfig,
+    *,
+    context: Any = None,
+) -> PerceptualEvidenceGraph:
     if not cfg.api_key:
         raise ValueError("LUCID_PERCEPTION_API_KEY or OPENAI_API_KEY required for llm backend")
 
     modality = inp.modality if isinstance(inp.modality, Modality) else Modality(str(inp.modality))
-    messages = build_messages(inp)
+    messages = build_messages(inp, context=context)
+    run_id = perception_run_id(inp)
+    attempts: list[dict[str, Any]] = []
     last_err: Exception | None = None
 
     for attempt in range(_MAX_ATTEMPTS):
+        raw = ""
+        data: dict[str, Any] | None = None
+        response_format = "unknown"
         try:
-            raw = _chat(cfg, messages)
+            chat_result = _chat(cfg, messages)
+            if isinstance(chat_result, tuple):
+                raw, response_format = chat_result
+            else:
+                raw, response_format = chat_result, "unknown"
             data = _parse_json(raw)
             graph = graph_from_dict(data, modality=modality)
             graph.provenance.extra["model"] = cfg.model
             graph.provenance.extra["llm_attempt"] = attempt + 1
-            _require_text_evidence(inp, graph)
+            graph.provenance.extra["input_hash"] = payload_hash(inp.raw_payload)
+            graph.provenance.extra["perception_run_id"] = run_id
+            graph.provenance.adapter_version = "llm-perception-v1"
+            graph.provenance.segmentation_pass_id = f"llm:{cfg.model}:attempt-{attempt + 1}"
+            _require_text_evidence(inp, graph, min_units=cfg.min_text_units)
+            attempts.append(_attempt_record(attempt + 1, raw, data, response_format, graph=graph))
+            _write_audit(cfg, run_id, inp, messages, attempts, graph)
             return graph
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             last_err = exc
+            attempts.append(
+                _attempt_record(
+                    attempt + 1,
+                    raw,
+                    data,
+                    response_format,
+                    error=str(exc),
+                )
+            )
             messages.append({"role": "user", "content": _retry_message(exc, inp)})
 
-    raise RuntimeError(f"llm perception failed after {_MAX_ATTEMPTS} attempts: {last_err}") from last_err
+    error = f"llm perception failed after {_MAX_ATTEMPTS} attempts: {last_err}"
+    _write_audit(cfg, run_id, inp, messages, attempts, None, error=error)
+    raise RuntimeError(error) from last_err
 
 
 def _retry_message(exc: Exception, inp: PerceptionInput) -> str:
@@ -58,7 +90,12 @@ def _retry_message(exc: Exception, inp: PerceptionInput) -> str:
     )
 
 
-def _require_text_evidence(inp: PerceptionInput, graph: PerceptualEvidenceGraph) -> None:
+def _require_text_evidence(
+    inp: PerceptionInput,
+    graph: PerceptualEvidenceGraph,
+    *,
+    min_units: int = 1,
+) -> None:
     modality = inp.modality if isinstance(inp.modality, Modality) else Modality(str(inp.modality))
     if modality != Modality.TEXT:
         return
@@ -69,6 +106,11 @@ def _require_text_evidence(inp: PerceptionInput, graph: PerceptualEvidenceGraph)
         raise ValueError(
             "model returned empty evidence graph for non-empty text "
             "(candidate_units and candidate_markers are both empty)"
+        )
+    if len(graph.candidate_units) < min_units:
+        raise ValueError(
+            f"model returned too few candidate_units for non-empty text "
+            f"({len(graph.candidate_units)} < {min_units})"
         )
 
 
@@ -85,7 +127,7 @@ def _parse_json(text: str) -> dict[str, Any]:
     return parsed
 
 
-def _chat(cfg: PerceptionConfig, messages: list[dict[str, str]]) -> str:
+def _chat(cfg: PerceptionConfig, messages: list[dict[str, str]]) -> tuple[str, str]:
     url = f"{cfg.base_url}/chat/completions"
     base_body: dict[str, Any] = {
         "model": cfg.model,
@@ -100,8 +142,10 @@ def _chat(cfg: PerceptionConfig, messages: list[dict[str, str]]) -> str:
     last_error: Exception | None = None
     for response_format in formats:
         body = dict(base_body)
+        response_format_name = "none"
         if response_format is not None:
             body["response_format"] = response_format
+            response_format_name = response_format.get("type", "unknown")
         try:
             payload = _post(cfg, url, body)
         except RuntimeError as exc:
@@ -115,9 +159,56 @@ def _chat(cfg: PerceptionConfig, messages: list[dict[str, str]]) -> str:
         choice = (payload.get("choices") or [{}])[0]
         if choice.get("finish_reason") == "length":
             raise RuntimeError("model hit max tokens before completing JSON")
-        return content
+        return content, response_format_name
 
     raise RuntimeError(f"perception API failed for all response formats: {last_error}")
+
+
+def _attempt_record(
+    attempt: int,
+    raw: str,
+    parsed: dict[str, Any] | None,
+    response_format: str,
+    *,
+    graph: PerceptualEvidenceGraph | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "attempt": attempt,
+        "timestamp": utc_now(),
+        "response_format": response_format,
+        "raw_response": raw,
+        "parsed": parsed,
+        "graph_summary": {
+            "candidate_units": len(graph.candidate_units) if graph else 0,
+            "candidate_markers": len(graph.candidate_markers) if graph else 0,
+            "uncertainty_flags": len(graph.uncertainty_flags) if graph else 0,
+        },
+        "error": error,
+    }
+
+
+def _write_audit(
+    cfg: PerceptionConfig,
+    run_id: str,
+    inp: PerceptionInput,
+    messages: list[dict[str, str]],
+    attempts: list[dict[str, Any]],
+    graph: PerceptualEvidenceGraph | None,
+    *,
+    error: str | None = None,
+) -> None:
+    if not cfg.write_audit:
+        return
+    PerceptionAuditLogger(cfg.audit_dir).write(
+        run_id=run_id,
+        inp=inp,
+        config=cfg,
+        messages=messages,
+        attempts=attempts,
+        graph=graph,
+        error=error,
+    )
 
 
 def _is_format_rejected(msg: str) -> bool:

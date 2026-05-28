@@ -68,7 +68,10 @@ def test_graph_from_dict_rejects_trace_ids() -> None:
 
 def test_normalize_fills_missing_list_keys() -> None:
     graph = normalize_graph_dict({"candidate_units": [{"unit_id": "u_hi", "surface": "hi"}]})
-    assert graph == {**empty_graph_template(), "candidate_units": [{"unit_id": "u_hi", "surface": "hi"}]}
+    assert graph == {
+        **empty_graph_template(),
+        "candidate_units": [{"unit_id": "u_hi", "surface": "hi"}],
+    }
 
 
 def test_normalize_coerces_string_units() -> None:
@@ -93,7 +96,9 @@ def test_graph_from_dict_accepts_region_with_id_alias() -> None:
     graph = graph_from_dict(
         {
             "candidate_units": [{"unit_id": "u_mom", "surface": "mom"}],
-            "candidate_regions": [{"id": "r_cooking", "role_hint": "activity", "member_unit_ids": ["u_mom"]}],
+            "candidate_regions": [
+                {"id": "r_cooking", "role_hint": "activity", "member_unit_ids": ["u_mom"]}
+            ],
         },
         modality=Modality.TEXT,
     )
@@ -163,6 +168,18 @@ def test_build_user_message_includes_text_to_analyze() -> None:
     assert "go to the bank" in body
 
 
+def test_build_user_message_includes_runtime_context() -> None:
+    from lucid.perception.schema import build_user_message
+
+    body = json.loads(
+        build_user_message(
+            PerceptionInput(raw_payload="go to the bank", modality=Modality.TEXT),
+            context={"conversation_id": "c-1"},
+        )
+    )
+    assert body["runtime_context"] == {"conversation_id": "c-1"}
+
+
 def test_system_prompt_requires_non_empty_units() -> None:
     prompt = build_system_prompt()
     assert "Required" in prompt or "must" in prompt.lower()
@@ -196,9 +213,90 @@ def test_llm_retries_on_empty_graph(monkeypatch) -> None:
 
     monkeypatch.setattr(llm_mod, "_chat", fake_chat)
     inp = PerceptionInput(raw_payload="go to the bank", modality=Modality.TEXT)
-    graph = llm_mod.perceive_llm(inp, PerceptionConfig(backend="llm", api_key="test-key", use_json_schema=False))
+    graph = llm_mod.perceive_llm(
+        inp,
+        PerceptionConfig(
+            backend="llm",
+            api_key="test-key",
+            use_json_schema=False,
+            write_audit=False,
+        ),
+    )
     assert len(calls) == 2
     assert graph.candidate_units[0].surface == "bank"
+
+
+def test_llm_retries_on_too_shallow_text_graph(monkeypatch) -> None:
+    from lucid.perception import llm as llm_mod
+
+    calls: list[int] = []
+
+    def fake_chat(_cfg, _messages):
+        calls.append(1)
+        if len(calls) == 1:
+            return json.dumps(
+                {
+                    **empty_graph_template(),
+                    "candidate_units": [{"unit_id": "u_bank", "surface": "bank"}],
+                }
+            )
+        return json.dumps(
+            {
+                **empty_graph_template(),
+                "candidate_units": [
+                    {"unit_id": "u_go", "surface": "go"},
+                    {"unit_id": "u_bank", "surface": "bank"},
+                ],
+            }
+        )
+
+    monkeypatch.setattr(llm_mod, "_chat", fake_chat)
+    inp = PerceptionInput(raw_payload="go to the bank", modality=Modality.TEXT)
+    graph = llm_mod.perceive_llm(
+        inp,
+        PerceptionConfig(
+            backend="llm",
+            api_key="test-key",
+            use_json_schema=False,
+            write_audit=False,
+            min_text_units=2,
+        ),
+    )
+    assert len(calls) == 2
+    assert [unit.surface for unit in graph.candidate_units] == ["go", "bank"]
+
+
+def test_llm_writes_audit_with_raw_and_normalized_graph(monkeypatch, tmp_path) -> None:
+    from lucid.perception import llm as llm_mod
+
+    def fake_chat(_cfg, _messages):
+        return json.dumps(
+            {
+                **empty_graph_template(),
+                "candidate_units": [{"unit_id": "u_bank", "surface": "bank"}],
+            }
+        )
+
+    monkeypatch.setattr(llm_mod, "_chat", fake_chat)
+    inp = PerceptionInput(raw_payload="bank", modality=Modality.TEXT)
+    graph = llm_mod.perceive_llm(
+        inp,
+        PerceptionConfig(
+            backend="llm",
+            api_key="test-key",
+            use_json_schema=False,
+            audit_dir=str(tmp_path),
+        ),
+        context={"turn": 1},
+    )
+    audit_files = list(tmp_path.glob("perception-*.json"))
+    assert len(audit_files) == 1
+    audit = json.loads(audit_files[0].read_text(encoding="utf-8"))
+    assert audit["success"] is True
+    assert audit["input"]["input_hash"] == graph.provenance.extra["input_hash"]
+    assert audit["attempts"][0]["raw_response"]
+    assert audit["graph"]["candidate_units"][0]["surface"] == "bank"
+    assert audit["messages"][1]["content"].find("runtime_context") >= 0
 
 
 def test_compact_output_omits_empty_lists_and_defaults() -> None:
@@ -225,7 +323,11 @@ def test_compact_output_omits_empty_lists_and_defaults() -> None:
     compact = compact_graph(graph)
     assert "candidate_units" in compact
     assert "candidate_regions" not in compact
-    assert compact["candidate_units"][0] == {"unit_id": "u_bank", "surface": "bank", "kind_hint": "span"}
+    assert compact["candidate_units"][0] == {
+        "unit_id": "u_bank",
+        "surface": "bank",
+        "kind_hint": "span",
+    }
     assert "confidence" not in compact["candidate_units"][0]
 
 
