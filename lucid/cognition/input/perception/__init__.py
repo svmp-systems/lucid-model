@@ -9,8 +9,16 @@ from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 
 from lucid.cognition.input.perception.config import PerceptionConfig
 from lucid.cognition.input.perception.llm import perceive_llm
-from lucid.cognition.input.perception.parse import graph_from_dict
 from lucid.cognition.input.perception.rule import perceive_grid, perceive_text
+from lucid.cognition.input.perception.schema import (
+    PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA,
+    compact_graph,
+    empty_graph_template,
+    graph_from_dict,
+    normalize_graph_dict,
+    structured_response_format,
+    to_compact_json,
+)
 
 
 def perceive(
@@ -26,15 +34,6 @@ def perceive(
     if modality == Modality.GRID:
         return perceive_grid(inp)
     return perceive_text(inp)
-
-
-from lucid.cognition.input.perception.compact import compact_graph, to_compact_json
-from lucid.cognition.input.perception.schema import (
-    PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA,
-    empty_graph_template,
-    normalize_graph_dict,
-    structured_response_format,
-)
 
 __all__ = [
     "PerceptionConfig",

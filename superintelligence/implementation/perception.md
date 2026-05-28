@@ -1,7 +1,9 @@
-Short-term perception: **LLM default** (`lucid/cognition/input/perception/`).
+a short term implementation of perception using LLMs for fast prototyping. Ideally we finish training our own perception layer by the end.
 
-- **Input (prompt):** raw payload + short task instructions only.
-- **Output (API):** `response_format: json_schema` with `PerceptualEvidenceGraph` schema; falls back to `json_object` if unsupported.
-- **After response:** `normalize_graph_dict` + semantic checks in `parse.py`.
+works by sending raw package to LLM, asking it to parse, and then return back to us in a schema
 
-Offline: `LUCID_PERCEPTION_BACKEND=rule`.
+gives output in these three forms
+- candidate units   - main individual traces
+- candidate regions - splits into 2 regions (so primitive traces and relational traces)
+- candidate containers - for grid parsing, marks things in boxes and borders and stuff.
+- candidate markers - supporting words / relational traces

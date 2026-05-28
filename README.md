@@ -17,5 +17,5 @@ OPENAI_API_KEY=sk-...
 Or set `$env:OPENAI_API_KEY` in PowerShell. Then:
 
 ```powershell
-py -m lucid.cognition.input.perception.cli "go to the bank."
+py -m lucid.cli perceive "go to the bank."
 ```
