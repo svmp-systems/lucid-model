@@ -7,7 +7,7 @@ writes audit artifacts using ``lucid.audit.logger.AuditLogger``.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
@@ -32,7 +32,7 @@ from lucid.ir.pipeline import (
 from lucid.ir.projector import ProjectorInput
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
-from lucid.perception import PerceptionConfig
+from lucid.cognition.input.perception import PerceptionConfig
 
 from .stages import FunctionStage, Stage
 from .stub_stages import build_default_stage_fns
@@ -104,7 +104,13 @@ class OrchestratorRunner:
         )
         # Keep a reference for runtime stages that need training metadata.
         ctx.episode = episode  # type: ignore[assignment]
-        ctx.extra["perception_config"] = self.config.perception or PerceptionConfig.from_env()
+        perception_cfg = self.config.perception or PerceptionConfig.from_env()
+        if perception_cfg.write_audit:
+            perception_cfg = replace(
+                perception_cfg,
+                audit_dir=str(self.audit.run_directory(ctx) / "perception"),
+            )
+        ctx.extra["perception_config"] = perception_cfg
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()

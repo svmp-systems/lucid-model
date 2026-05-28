@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from lucid.ir.basins import BasinOutput
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import ComputePolicy
 from lucid.ir.context_op import ContextFrame

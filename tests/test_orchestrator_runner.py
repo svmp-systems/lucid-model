@@ -9,7 +9,7 @@ from lucid.ir.common import DecoderMode, LucidityDecision, Modality
 from lucid.ir.lucidity import DecoderPolicy, LucidityOutput, SearchDirectives
 from lucid.ir.training import Episode, GoldLabels
 from lucid.orchestrator.cli import main as run_cli
-from lucid.perception import PerceptionConfig
+from lucid.cognition.input.perception import PerceptionConfig
 from lucid.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.orchestrator.stages import FunctionStage
 from lucid.orchestrator.stub_stages import build_default_stage_fns
@@ -142,4 +142,51 @@ def test_cli_accepts_pretty_json_with_bom(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert list((tmp_path / "audit" / "runs").iterdir())
+
+
+def test_llm_perception_audit_is_linked_from_stage_audit(monkeypatch, tmp_path: Path) -> None:
+    from lucid.cognition.input.perception import llm as llm_mod
+
+    def fake_chat(_cfg, _messages):
+        return json.dumps(
+            {
+                "candidate_units": [{"unit_id": "u_bank", "surface": "bank"}],
+                "candidate_regions": [],
+                "candidate_containers": [],
+                "candidate_markers": [],
+                "arrangement_hints": [],
+                "change_hints": [],
+                "grouping_hints": [],
+                "reference_hints": [],
+                "uncertainty_flags": [],
+            }
+        )
+
+    monkeypatch.setattr(llm_mod, "_chat", fake_chat)
+    episode = Episode(
+        episode_id="ep-llm-audit",
+        modality=Modality.TEXT,
+        raw_input="go to the bank",
+    )
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=str(tmp_path),
+            perception=PerceptionConfig(backend="llm", api_key="test-key"),
+        )
+    )
+
+    run = runner.run_episode(episode)
+    run_dir = Path(run.context.audit_dir)
+    stage_audit = json.loads((run_dir / "perception.json").read_text(encoding="utf-8"))
+    linked_path = Path(
+        stage_audit["output"]["provenance"]["extra"]["perception_audit_path"]
+    )
+
+    assert linked_path.parent == run_dir / "perception"
+    assert linked_path.exists()
+    detail_audit = json.loads(linked_path.read_text(encoding="utf-8"))
+    assert detail_audit["schema_version"] == 1
+    assert detail_audit["stage_name"] == "perception_llm"
+    assert detail_audit["output"]["attempts"][0]["raw_response"]
+    assert detail_audit["output"]["graph"]["candidate_units"][0]["surface"] == "bank"
 

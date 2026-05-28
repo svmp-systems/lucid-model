@@ -10,7 +10,7 @@ from pathlib import Path
 
 from lucid.ir.serde import from_json
 from lucid.ir.training import Episode
-from lucid.perception import PerceptionConfig
+from lucid.cognition.input.perception import PerceptionConfig
 
 from .runner import OrchestratorConfig, OrchestratorRunner
 
