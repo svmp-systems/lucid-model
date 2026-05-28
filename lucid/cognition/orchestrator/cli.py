@@ -10,7 +10,7 @@ from pathlib import Path
 
 from lucid.ir.serde import from_json
 from lucid.ir.training import Episode
-from lucid.perception.config import PerceptionConfig
+from lucid.perception import PerceptionConfig
 
 from .runner import OrchestratorConfig, OrchestratorRunner
 
@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         "--perception",
         default="",
         choices=["", "rule", "llm"],
-        help="Perception backend (default: LUCID_PERCEPTION_BACKEND or rule)",
+        help="Perception backend (default: llm; use rule for offline)",
     )
     args = p.parse_args(argv)
 

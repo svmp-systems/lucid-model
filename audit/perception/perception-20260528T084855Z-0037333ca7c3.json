@@ -1,0 +1,280 @@
+{
+  "audit_version": "perception-audit-v1",
+  "run_id": "perception-20260528T084855Z-0037333ca7c3",
+  "stage_name": "perception",
+  "timestamp": "2026-05-28T08:49:06+00:00",
+  "success": true,
+  "human_summary": "LLM perception using gpt-4o-mini produced 6 unit(s), 3 marker(s), 0 uncertainty flag(s) after 2 attempt(s).",
+  "input": {
+    "modality": "text",
+    "payload_type": "str",
+    "payload_size": 45,
+    "payload_preview": "my mom is cooking curd rice with potato fries",
+    "input_hash": "0037333ca7c3e7d5a12fcf125367cfd36e3d134b4157b5eb8b8ed3f2f7061b54",
+    "task_intent_hint": null,
+    "prior_context_keys": [],
+    "provenance_seed": ""
+  },
+  "config": {
+    "backend": "llm",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.openai.com/v1",
+    "timeout_s": 90.0,
+    "use_json_schema": true,
+    "min_text_units": 1,
+    "api_key_present": true
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Perception stage: extract surface evidence from the user message. Required for non-empty text: candidate_units = content words only (nouns, main verbs, adjectives, adverbs); candidate_markers = every structural/function token, including possessives and determiners (my, the, a), prepositions (in, with, at), copulas/auxiliaries (is, are, was), conjunctions (and), subordinators (while, which). Do not omit surface tokens. Never put my/the/a in candidate_units. For possessives/determiners, set possible_target_unit_ids to the following noun unit. Also extract when supported: candidate_regions (e.g. main_clause vs relative_clause with member_unit_ids), reference_hints (e.g. deposited/placed/it -> earlier noun like money, reference_type object_carryover), arrangement_hints (e.g. while subordinate_to found event, hint_type temporal_subordinate), uncertainty_flags for ambiguous terms (e.g. bank). Use [] only for categories with no evidence (change_hints for plain text, etc.). unit_id like u_bank; never trace ids or resolved senses. Do not interpret or answer."
+    },
+    {
+      "role": "user",
+      "content": "{\"modality\": \"text\", \"payload\": \"my mom is cooking curd rice with potato fries\", \"task\": \"emit PerceptualEvidenceGraph JSON; candidate_units must not be empty for non-empty text\", \"text_to_analyze\": \"my mom is cooking curd rice with potato fries\"}"
+    },
+    {
+      "role": "user",
+      "content": "Invalid output: candidate_regions must be an array. Return valid JSON matching the response schema. Payload to analyze: my mom is cooking curd rice with potato fries"
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "timestamp": "2026-05-28T08:49:01+00:00",
+      "response_format": "json_object",
+      "raw_response": "{\n  \"candidate_units\": [\n    \"mom\",\n    \"cooking\",\n    \"curd\",\n    \"rice\",\n    \"potato\",\n    \"fries\"\n  ],\n  \"candidate_markers\": [\n    \"my\",\n    \"is\",\n    \"with\"\n  ],\n  \"possible_target_unit_ids\": {\n    \"my\": \"mom\",\n    \"with\": \"fries\"\n  },\n  \"candidate_regions\": {\n    \"main_clause\": {\n      \"member_unit_ids\": [\n        \"mom\",\n        \"is\",\n        \"cooking\",\n        \"curd\",\n        \"rice\"\n      ]\n    },\n    \"prepositional_phrase\": {\n      \"member_unit_ids\": [\n        \"with\",\n        \"potato\",\n        \"fries\"\n      ]\n    }\n  },\n  \"reference_hints\": [],\n  \"arrangement_hints\": [],\n  \"uncertainty_flags\": []\n}",
+      "parsed": {
+        "candidate_units": [
+          "mom",
+          "cooking",
+          "curd",
+          "rice",
+          "potato",
+          "fries"
+        ],
+        "candidate_markers": [
+          "my",
+          "is",
+          "with"
+        ],
+        "possible_target_unit_ids": {
+          "my": "mom",
+          "with": "fries"
+        },
+        "candidate_regions": {
+          "main_clause": {
+            "member_unit_ids": [
+              "mom",
+              "is",
+              "cooking",
+              "curd",
+              "rice"
+            ]
+          },
+          "prepositional_phrase": {
+            "member_unit_ids": [
+              "with",
+              "potato",
+              "fries"
+            ]
+          }
+        },
+        "reference_hints": [],
+        "arrangement_hints": [],
+        "uncertainty_flags": []
+      },
+      "graph_summary": {
+        "candidate_units": 0,
+        "candidate_markers": 0,
+        "uncertainty_flags": 0
+      },
+      "error": "candidate_regions must be an array"
+    },
+    {
+      "attempt": 2,
+      "timestamp": "2026-05-28T08:49:06+00:00",
+      "response_format": "json_object",
+      "raw_response": "{\n  \"candidate_units\": [\n    \"mom\",\n    \"cooking\",\n    \"curd\",\n    \"rice\",\n    \"potato\",\n    \"fries\"\n  ],\n  \"candidate_markers\": [\n    \"my\",\n    \"is\",\n    \"with\"\n  ],\n  \"candidate_regions\": [\n    {\n      \"member_unit_ids\": [\n        \"u_mom\",\n        \"u_cooking\",\n        \"u_curd\",\n        \"u_rice\",\n        \"u_potato\",\n        \"u_fries\"\n      ],\n      \"region_type\": \"main_clause\"\n    }\n  ],\n  \"reference_hints\": [],\n  \"arrangement_hints\": [],\n  \"uncertainty_flags\": []\n}",
+      "parsed": {
+        "candidate_units": [
+          "mom",
+          "cooking",
+          "curd",
+          "rice",
+          "potato",
+          "fries"
+        ],
+        "candidate_markers": [
+          "my",
+          "is",
+          "with"
+        ],
+        "candidate_regions": [
+          {
+            "member_unit_ids": [
+              "u_mom",
+              "u_cooking",
+              "u_curd",
+              "u_rice",
+              "u_potato",
+              "u_fries"
+            ],
+            "region_type": "main_clause"
+          }
+        ],
+        "reference_hints": [],
+        "arrangement_hints": [],
+        "uncertainty_flags": []
+      },
+      "graph_summary": {
+        "candidate_units": 6,
+        "candidate_markers": 3,
+        "uncertainty_flags": 0
+      },
+      "error": null
+    }
+  ],
+  "graph_summary": {
+    "candidate_units": 6,
+    "candidate_regions": 1,
+    "candidate_containers": 0,
+    "candidate_markers": 3,
+    "arrangement_hints": 0,
+    "change_hints": 0,
+    "grouping_hints": 0,
+    "reference_hints": 0,
+    "uncertainty_flags": 0
+  },
+  "graph": {
+    "candidate_units": [
+      {
+        "unit_id": "u_mom",
+        "surface": "mom",
+        "kind_hint": "span",
+        "type_hints": [],
+        "feature_signature": "",
+        "position_or_time": "",
+        "confidence": 0.0,
+        "salience": 0.0,
+        "uncertainty": null
+      },
+      {
+        "unit_id": "u_cooking",
+        "surface": "cooking",
+        "kind_hint": "span",
+        "type_hints": [],
+        "feature_signature": "",
+        "position_or_time": "",
+        "confidence": 0.0,
+        "salience": 0.0,
+        "uncertainty": null
+      },
+      {
+        "unit_id": "u_curd",
+        "surface": "curd",
+        "kind_hint": "span",
+        "type_hints": [],
+        "feature_signature": "",
+        "position_or_time": "",
+        "confidence": 0.0,
+        "salience": 0.0,
+        "uncertainty": null
+      },
+      {
+        "unit_id": "u_rice",
+        "surface": "rice",
+        "kind_hint": "span",
+        "type_hints": [],
+        "feature_signature": "",
+        "position_or_time": "",
+        "confidence": 0.0,
+        "salience": 0.0,
+        "uncertainty": null
+      },
+      {
+        "unit_id": "u_potato",
+        "surface": "potato",
+        "kind_hint": "span",
+        "type_hints": [],
+        "feature_signature": "",
+        "position_or_time": "",
+        "confidence": 0.0,
+        "salience": 0.0,
+        "uncertainty": null
+      },
+      {
+        "unit_id": "u_fries",
+        "surface": "fries",
+        "kind_hint": "span",
+        "type_hints": [],
+        "feature_signature": "",
+        "position_or_time": "",
+        "confidence": 0.0,
+        "salience": 0.0,
+        "uncertainty": null
+      }
+    ],
+    "candidate_regions": [
+      {
+        "region_id": "r_0",
+        "role_hint": "",
+        "member_unit_ids": [
+          "u_mom",
+          "u_cooking",
+          "u_curd",
+          "u_rice",
+          "u_potato",
+          "u_fries"
+        ],
+        "confidence": 0.0,
+        "uncertainty": null
+      }
+    ],
+    "candidate_containers": [],
+    "candidate_markers": [
+      {
+        "marker_id": "m_my",
+        "surface": "my",
+        "marker_type_hints": [],
+        "possible_target_unit_ids": [],
+        "confidence": 0.0
+      },
+      {
+        "marker_id": "m_is",
+        "surface": "is",
+        "marker_type_hints": [],
+        "possible_target_unit_ids": [],
+        "confidence": 0.0
+      },
+      {
+        "marker_id": "m_with",
+        "surface": "with",
+        "marker_type_hints": [],
+        "possible_target_unit_ids": [],
+        "confidence": 0.0
+      }
+    ],
+    "arrangement_hints": [],
+    "change_hints": [],
+    "grouping_hints": [],
+    "reference_hints": [],
+    "uncertainty_flags": [],
+    "provenance": {
+      "source_id": "",
+      "modality": "text",
+      "timestamp": "",
+      "adapter_version": "llm-perception-v1",
+      "segmentation_pass_id": "llm:gpt-4o-mini:attempt-2",
+      "session_id": "",
+      "extra": {
+        "backend": "llm",
+        "model": "gpt-4o-mini",
+        "llm_attempt": 2,
+        "input_hash": "0037333ca7c3e7d5a12fcf125367cfd36e3d134b4157b5eb8b8ed3f2f7061b54",
+        "perception_run_id": "perception-20260528T084855Z-0037333ca7c3"
+      }
+    }
+  },
+  "error": null
+}

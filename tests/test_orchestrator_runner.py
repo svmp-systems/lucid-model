@@ -9,6 +9,7 @@ from lucid.ir.common import DecoderMode, LucidityDecision, Modality
 from lucid.ir.lucidity import DecoderPolicy, LucidityOutput, SearchDirectives
 from lucid.ir.training import Episode, GoldLabels
 from lucid.orchestrator.cli import main as run_cli
+from lucid.perception import PerceptionConfig
 from lucid.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.orchestrator.stages import FunctionStage
 from lucid.orchestrator.stub_stages import build_default_stage_fns
@@ -22,7 +23,12 @@ def test_orchestrator_runs_and_writes_audit(tmp_path: Path) -> None:
         gold=GoldLabels(lucidity_target="PRESERVE_AMBIGUITY", expected_answer="(test)"),
         seed=1,
     )
-    runner = OrchestratorRunner(config=OrchestratorConfig(audit_base_dir=str(tmp_path)))
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=str(tmp_path),
+            perception=PerceptionConfig(backend="rule"),
+        )
+    )
     run = runner.run_episode(episode)
 
     # Sanity: stage ordering exists and decoder produced output.
@@ -44,7 +50,10 @@ def test_failed_stage_writes_partial_audit(tmp_path: Path) -> None:
     fns["dmf"] = fail_dmf
     stages = {name: FunctionStage(stage_name=name, fn=fn) for name, fn in fns.items()}
     runner = OrchestratorRunner(
-        config=OrchestratorConfig(audit_base_dir=str(tmp_path)),
+        config=OrchestratorConfig(
+            audit_base_dir=str(tmp_path),
+            perception=PerceptionConfig(backend="rule"),
+        ),
         stages=stages,
     )
 
@@ -85,7 +94,10 @@ def test_projection_path_keeps_both_lucidity_audits(tmp_path: Path) -> None:
     fns["lucidity"] = lucidity_with_projection
     stages = {name: FunctionStage(stage_name=name, fn=fn) for name, fn in fns.items()}
     runner = OrchestratorRunner(
-        config=OrchestratorConfig(audit_base_dir=str(tmp_path)),
+        config=OrchestratorConfig(
+            audit_base_dir=str(tmp_path),
+            perception=PerceptionConfig(backend="rule"),
+        ),
         stages=stages,
     )
 
@@ -124,7 +136,9 @@ def test_cli_accepts_pretty_json_with_bom(tmp_path: Path) -> None:
     episode_path = tmp_path / "episode.json"
     episode_path.write_text(json.dumps(payload, indent=2), encoding="utf-8-sig")
 
-    exit_code = run_cli([str(episode_path), "--audit-dir", str(tmp_path / "audit")])
+    exit_code = run_cli(
+        [str(episode_path), "--audit-dir", str(tmp_path / "audit"), "--perception", "rule"]
+    )
 
     assert exit_code == 0
     assert list((tmp_path / "audit" / "runs").iterdir())

@@ -6,15 +6,17 @@ ideally this competes with frontier models by quantizing memory costs heavily, q
 
 besides that, we believe there exists an open path to continual learning and self research from a system like this.
 
-## Perception (model = evidence only)
+## Perception (LLM)
 
-The perception stage emits a `PerceptualEvidenceGraph` — spans, markers, hints, uncertainty — never meaning or answers.
+Put your key in `.env` at the repo root (loaded automatically):
 
-- **Offline (default):** `rule` backend — no API key.
-- **LLM:** set `LUCID_PERCEPTION_BACKEND=llm` and `OPENAI_API_KEY` (or `LUCID_PERCEPTION_API_KEY`). Optional: `LUCID_PERCEPTION_BASE_URL` for Ollama/local OpenAI-compatible servers.
+```
+OPENAI_API_KEY=sk-...
+```
 
-```bash
-lucid-perceive "Alex found money and put it in the bank."
-lucid-run episode.json --perception llm
+Or set `$env:OPENAI_API_KEY` in PowerShell. Then:
+
+```
+py -m lucid.perception.cli "go to the bank."
 ```
 
