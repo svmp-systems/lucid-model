@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from lucid.audit.logger import summarize_stage_output
-from lucid.cognition.context_op import run_context_op
+from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy
 from lucid.ir.context_op import ContextOpInput

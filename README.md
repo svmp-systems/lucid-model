@@ -6,16 +6,3 @@ ideally this competes with frontier models by quantizing memory costs heavily, q
 
 besides that, we believe there exists an open path to continual learning and self research from a system like this.
 
-## Perception (LLM)
-
-Put your key in `.env` at the repo root (loaded automatically):
-
-```text
-OPENAI_API_KEY=sk-...
-```
-
-Or set `$env:OPENAI_API_KEY` in PowerShell. Then:
-
-```powershell
-py -m lucid.cognition.input.perception.cli "go to the bank."
-```
