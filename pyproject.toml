@@ -14,7 +14,6 @@ dependencies = []
 lucid = "lucid.cli:main"
 lucid-inspect = "lucid.audit.inspect:main"
 lucid-gen = "lucid.training.generator.cli:main"
-lucid-run = "lucid.orchestrator.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]

@@ -20,24 +20,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         value = value[1:-1]
-    if not key:
-        return None
-    return key, value
-
-
-def load_dotenv(path: Path | None = None, *, override: bool = False) -> bool:
-    """Load a repo-local .env using only the standard library."""
-    dotenv = path or _find_dotenv()
-    if dotenv is None or not dotenv.is_file():
-        return False
-    for line in dotenv.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_env_line(line)
-        if parsed is None:
-            continue
-        key, value = parsed
-        if override or key not in os.environ:
-            os.environ[key] = value
-    return True
+    return (key, value) if key else None
 
 
 def _find_dotenv(start: Path | None = None) -> Path | None:
@@ -49,6 +32,20 @@ def _find_dotenv(start: Path | None = None) -> Path | None:
         if (directory / "pyproject.toml").is_file():
             return None
     return None
+
+
+def load_dotenv(path: Path | None = None, *, override: bool = False) -> bool:
+    dotenv = path or _find_dotenv()
+    if dotenv is None or not dotenv.is_file():
+        return False
+    for line in dotenv.read_text(encoding="utf-8").splitlines():
+        parsed = _parse_env_line(line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if override or key not in os.environ:
+            os.environ[key] = value
+    return True
 
 
 @dataclass(slots=True)

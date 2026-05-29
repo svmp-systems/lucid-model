@@ -129,10 +129,19 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
 
     elif stage_name == "context_op":
         ctx = len(data.get("context_frames") or [])
+        scoped = len(data.get("scoped_trace_assignments") or [])
+        links = len(data.get("frame_links") or [])
         gates = len(data.get("interference_gates") or [])
+        pressure = len(data.get("local_basin_pressures") or [])
         lines.append(f"context_frames: {ctx}")
+        lines.append(f"scoped_trace_assignments: {scoped}")
+        lines.append(f"frame_links: {links}")
         lines.append(f"interference_gates: {gates}")
-        headline = f"{ctx} context frames, {gates} gates"
+        lines.append(f"local_basin_pressures: {pressure}")
+        notes = data.get("audit_notes") or []
+        if notes:
+            lines.append(f"audit: {notes[0]}")
+        headline = f"{ctx} context frames, {scoped} scoped traces, {gates} gates"
 
     elif stage_name == "interference":
         tt = len(data.get("trace_trace_edges") or [])

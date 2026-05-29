@@ -6,8 +6,8 @@ import json
 import re
 from typing import Any
 
-from lucid.ir.common import Modality
 from lucid.ir.perception import PerceptionInput
+from lucid.ir.common import Modality
 from lucid.ir.perception import PerceptualEvidenceGraph
 from lucid.ir.serde import from_dict, to_dict
 
@@ -134,6 +134,8 @@ _LIST_KEYS = (
     "uncertainty_flags",
 )
 
+_FORBIDDEN = ("bank_sense", "trace_id", "task_type", "interpretation", "final_answer")
+
 PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -178,8 +180,6 @@ _EMPTY_GRAPH_RETRY = (
     "If there are two events (found vs deposited) add candidate_regions and reference_hints. "
     "Flag polysemy on bank."
 )
-
-_FORBIDDEN = ("bank_sense", "trace_id", "task_type", "interpretation", "final_answer")
 
 
 def empty_graph_template() -> dict[str, Any]:
@@ -334,14 +334,11 @@ def graph_from_dict(data: dict[str, Any], *, modality: Modality) -> PerceptualEv
 
 
 def _is_empty_value(value: Any) -> bool:
-    return (
-        value is None
-        or value == ""
-        or value == 0
-        or value == 0.0
-        or isinstance(value, (list, dict))
-        and len(value) == 0
-    )
+    if value is None:
+        return True
+    if value == "" or value == 0 or value == 0.0:
+        return True
+    return isinstance(value, (list, dict)) and len(value) == 0
 
 
 def _compact_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -352,12 +349,16 @@ def compact_graph_dict(data: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in _LIST_KEYS:
         raw_items = data.get(key) or []
-        items = [
-            _compact_item(item) if isinstance(item, dict) else item
-            for item in raw_items
-            if not _is_empty_value(item)
-        ]
-        items = [item for item in items if not _is_empty_value(item)]
+        if not raw_items:
+            continue
+        items: list[Any] = []
+        for item in raw_items:
+            if isinstance(item, dict):
+                compacted = _compact_item(item)
+                if compacted:
+                    items.append(compacted)
+            elif not _is_empty_value(item):
+                items.append(item)
         if items:
             out[key] = items
 
@@ -371,6 +372,7 @@ def compact_graph_dict(data: dict[str, Any]) -> dict[str, Any]:
                 compact_prov["extra"] = compact_extra
         if compact_prov:
             out["provenance"] = compact_prov
+
     return out
 
 

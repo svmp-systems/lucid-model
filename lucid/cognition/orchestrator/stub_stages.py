@@ -20,6 +20,7 @@ from lucid.ir.lucidity import CommittedState, DecoderPolicy, LucidityInput, Luci
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
+from lucid.cognition.reasoning.context_op import run_context_op
 
 
 def _lucidity_target_to_decision(target: str) -> LucidityDecision:
@@ -59,7 +60,7 @@ def binding(inp: BindingInput, _ctx: object) -> BindingOutput:
 
 
 def context_op(inp: ContextOpInput, _ctx: object) -> ContextOpOutput:
-    return ContextOpOutput()
+    return run_context_op(inp)
 
 
 def interference(inp: InterferenceInput, _ctx: object) -> InterferenceOutput:
@@ -124,4 +125,3 @@ def build_default_stage_fns() -> dict[str, object]:
         "lucidity": lucidity,
         "decoder": decoder,
     }
-
