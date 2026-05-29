@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from lucid.audit import AuditLogger, content_hash, print_run, summarize_stage_output
-from lucid.audit.inspect import format_manifest
 from lucid.ir.binding import BindingOutput, CandidateFrame
 from lucid.ir.common import DecoderMode, LucidityDecision, Modality, TaskIntent
 from lucid.ir.cue import CueCloud, TraceActivationRequest

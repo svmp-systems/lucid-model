@@ -13,3 +13,5 @@
 # do not randomly create folders. use accurate and adept folders within the existing folder structure.
 
 # make every module auditable and connected to lucid-model/lucid/audit/
+
+# for every new component/module, add a tiny direct manual smoke command through the universal lucid CLI.

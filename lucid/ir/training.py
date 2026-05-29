@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from lucid.ir.basins import BasinAssembly, BasinOutput
+from lucid.ir.basins import BasinOutput
 from lucid.ir.binding import BindingOutput
-from lucid.ir.common import LucidityDecision, Modality, TaskIntent
+from lucid.ir.common import Modality, TaskIntent
 from lucid.ir.context_op import ContextOpOutput
 from lucid.ir.cue import CueCloud
 from lucid.ir.dmf import DmfOutput
