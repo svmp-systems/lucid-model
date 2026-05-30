@@ -1,8 +1,16 @@
 # Scaling observatory
 
-Scoped architecture spec for lucid-model **cost–quality tracking** across training and inference.
+Scoped architecture spec for lucid-model **cost–quality tracking**, **internal scaling**, and **frontier-facing comparison**.
 
-This is not frontier-lab “parameters vs loss” scaling. It is **your** question: when we spend more time, GPU, data, or memory, **what do we get back**, and when does that **stop helping** or **start hurting**?
+This is not frontier-lab “parameters vs loss” scaling. It is:
+
+```
+When we spend more (time, GPU, $, data, memory, sparsity),
+    what improves?
+    what does each success cost?
+    where do we plateau or fall off?
+    how do we compare on public benchmarks without fake precision?
+```
 
 Aligned with:
 
@@ -12,343 +20,546 @@ training/training orchestrator.md — capability gained per update dollar
 training/training quantization.md — NO_UPDATE on high-margin success
 ```
 
-Implementation target (when built): `lucid/training/scaling/` + hooks in orchestrator runner and training orchestrator. Audits under `lucid/audit/scaling/`.
+Implementation: `lucid/audit/scaling.py` (Layer 1–2). Data: `audit/scaling/points.jsonl` (`LUCID_SCALING_DIR`). CLI: `lucid scaling summary|export|path`. Frontier template: `audit/scaling/frontier_reference.csv`.
 
 ---
 
-## Role
+## Document structure
 
-The scaling observatory is a **receipt log + reporting layer**. It does not train anything. It records every meaningful run so you can answer:
+| Section | Purpose |
+|---------|---------|
+| **§1 Role** | What the observatory is and is not |
+| **§2 Implementation — what to track** | Raw fields, hooks, storage — **build this** |
+| **§3 Post-implementation — inference from data** | Summaries, curves, graphs, frontier comparison — **derive after logging** |
+| **§4 Training modes & scale_id** | Never mix curves without tags |
+| **§5 Plateau & fall off** | Rules inferred from trends |
+| **§6 Build order** | Phases vs deliverables |
+| **§7 Anti-patterns** | Misleading charts and comparisons |
 
-```
-When we do more work (episodes, GPU-hours, bigger memory, heavier retrieval),
-    what improves?
-    what does each success cost?
-    where do we plateau (diminishing returns)?
-    where do we fall off (regressions, thrashing, pollution)?
-```
-
-Use it for **module-by-module calibration** (Mode A), **stacked stages** (Mode B), and **full pipeline + orchestrator** (Mode C) — **never mixed on one curve without labels**.
-
----
-
-## Plain-language overview
-
-Lucid-model thinks in **steps** (perception → cue → memory → binding → … → answer). Training mostly **fixes the smallest piece that broke**, not one giant backprop through everything.
-
-A scaling observatory is the system’s **notebook**:
-
-| Question | Example answer from the log |
-|----------|-----------------------------|
-| Did more episodes help cue? | Gold recall 72% → 91% from 1k → 10k episodes, then flat |
-| Did more GPU on Arc help? | +3% holdout per 100 GPU-hours until ~400h, then flat |
-| Are we wasting money? | Cost per success doubled; patch promotion high but replay queue growing |
-| Ready for Phase 4 cloud spend? | Marginal gain per $500/month below threshold in `build.md` |
-
-**Cost-based scaling law** (practical meaning): a **measured trend** you plot after enough points, e.g. “roughly +X% benchmark score per 100 GPU-hours until Y hours, then plateau.” Not a theorem — a **decision input** for `PHASE3_GO_NO_GO.md` and Phase 4 budget.
+**Rule:** Implementation only **appends facts**. Graphs, scaling “laws,” and frontier points on charts are **computed later** from those facts (and optional external benchmark tables).
 
 ---
 
-## What we scale (axes)
+## §1 Role
 
-Frontier labs scale **parameters and tokens**. Lucid-model scales different knobs:
-
-| Axis | Examples |
-|------|----------|
-| **Data** | 420 → 7k → 150k → 1.5M episodes; synthetic vs verifier mix |
-| **Compute** | Laptop CPU ms/run; cloud GPU-seconds; LLM API $ for perception/decoder |
-| **Sparsity / cost per run** | `retrieval_budget`, active traces K, basins H, projector on-demand |
-| **Memory** | Trace/basin count; hot vs frozen tiers; quantization |
-| **Training mode** | Calibrate one module (A) vs stack (B) vs full loop + patches (C) |
-| **Quality** | Validator pass; module gold match; benchmark holdout; patches that stay fixed |
-
-North-star metric (from training orchestrator):
+The scaling observatory is a **receipt log + query/export layer**. It does **not** train, patch, or commit lucidity decisions.
 
 ```
-capability gained per update dollar
+Implementation:   run finished → append ScalingPoint (and optional CampaignManifest)
+Post-implementation:  aggregate → summarize → plot → write PHASE3_GO_NO_GO snippets
 ```
 
-Also track **successes per GPU-hour** and **cost per successful episode** when GPU or cloud $ is involved.
+Use for:
+
+- **Mode A** — module calibration vs generator gold  
+- **Mode B** — stacked stages (real upstream + module under test)  
+- **Mode C** — full pipeline + orchestrator  
+- **Inference** — chat/CLI/API turns (cost per turn, latency)  
+- **Eval campaigns** — Arc, BabyLM, private holdout (benchmark score vs campaign GPU-h / $)
+
+**Never** plot Mode A and Mode C on one curve without `training_mode` and `module_under_test` labels.
 
 ---
 
-## Training modes — separate curves
+## §2 Implementation — what to track
 
-From `build.md`:
+Everything in this section is **written at runtime** (Layer 1). No graphs required.
 
-| Mode | Plain meaning | What scaling measures |
-|------|---------------|------------------------|
-| **A — Calibrate** | Train or score **one stage** against generator gold; rest stubbed or gold | Learning curve for that module: gold recall, F1, etc. vs episodes or steps |
-| **B — Stack** | Real upstream + module under test + stub/gold downstream | Composition curve: does real cue + gold DMF beat stub cue? |
-| **C — Full loop** | End-to-end run + validator + orchestrator patches | System curve: validator pass vs corpus size; cost vs success; patch efficiency |
+### 2.1 Core record: `ScalingPoint`
 
-**Rule:** same log file, different `training_mode` and `module_under_test` tags. Do not plot Mode A cue calibration and Mode C full pipeline on one line without labeling.
+Append one row per logical unit. Choose unit by event type:
 
-Recommended grouping key:
+| Event type | One ScalingPoint per |
+|------------|----------------------|
+| Pipeline episode run | `run_id` |
+| Orchestrator training step | `orchestrator_step_id` |
+| Module trainer batch/epoch | `trainer_step_id` |
+| Benchmark eval job | `eval_job_id` (or per-task if cheap) |
+| Chat/API turn | `session_id` + `turn_index` |
 
-```
-scale_id = {module_under_test}:{training_mode}:{corpus_version}:{config_hash}
-```
-
-`config_hash` must change when retrieval budget, tracebank snapshot, seed policy, or stub versions change — otherwise curves are not comparable.
-
----
-
-## Cost-based scaling: spend vs return
-
-### What counts as spend (inputs)
-
-| Field | Why |
-|-------|-----|
-| `wall_time_ms` | Every environment |
-| `gpu_seconds` | Cloud / GPU eval |
-| `llm_tokens` or `llm_cost_usd` | LLM perception or decoder adapters |
-| `episodes_processed` | Data scale |
-| `shadow_episodes` | Hidden tax per patch (orchestrator) |
-| `active_trace_count`, `active_basin_count` | How “heavy” the cognition pass was |
-| `projector_rollout_count` | Expensive consequence testing |
-| `lucidity_iterations` | SEARCH_WIDER / RECHECK_BINDING loops |
-| `patches_applied`, `shadow_tests_run` | Training churn |
-
-Populate from `RunLog.cost_metrics`, pipeline `CostMetrics`, and orchestrator status (`success_rate`, `patch_promotion_rate`, `failure_replay_queue_depth`).
-
-### What counts as return (outputs)
-
-| Field | Why |
-|-------|-----|
-| `validator_success`, `validator_score` | End-to-end truth when available |
-| `module_gold_match` | Mode A (e.g. cue trace recall vs `TraceTarget`) |
-| `benchmark_score` | Arc / BabyLM when run |
-| `patch_promoted_and_episode_cleared` | Real fix, not apply-only |
-| `retention_canary_pass` | No regression after patch |
-| `no_update` (high margin success) | Cheap good outcome — still log it |
-
-### Derived metrics (reporting)
-
-```
-cost_per_success        = total_compute_spent / successes
-successes_per_gpu_hour  = successes / gpu_seconds * 3600
-capability_per_dollar   = delta_quality / delta_spend   (over a window)
-marginal_gain           = delta_quality / delta_compute (between two scale steps)
-```
-
----
-
-## Plateau vs fall off
-
-### Plateau (diminishing returns — not necessarily bad)
-
-**Plateau** = you spend more, quality barely moves.
-
-Examples:
-
-- Cue encoder already 95% gold on Phase 1 templates; 10× more episodes on the same recipe adds &lt;1%.
-- Arc holdout flat for 200 GPU-hours while corpus still growing.
-
-**Action:** stop pouring compute on that module or corpus slice; move to the next bottleneck (binding, full pipeline, harder templates).
-
-### Fall off (bad — detect early)
-
-**Fall off** = you spend more and things get **worse**.
-
-Examples:
-
-| Symptom | Likely cause |
-|---------|----------------|
-| Pass rate down while episode count up | Trace/basin pollution; wrong patches promoted |
-| `failure_replay_queue_depth` up, `patch_promotion_rate` high | Patches applied but not verified; stale replay |
-| Cost per success up, quality flat | Shadow eval or retrieval too heavy without gain |
-| Retention canary failures rising | Overfitting patches to target episode only |
-| Bigger bank, same K retrieval | Wrong traces crowd out good ones |
-
-**Action:** freeze scale-up; fix orchestrator clear rules, retention suite, or module blame — do not open Phase 4 spend (`build.md`).
-
----
-
-## Three layers (what to build when)
-
-### Layer 1 — Receipt (build with first real training)
-
-After each inference run, calibration batch, or orchestrator step, append one **ScalingPoint** (JSONL or SQLite).
-
-```
+```text
 ScalingPoint {
-    timestamp
-    scale_id
-    training_mode              // calibrate | stack | full_loop
-    module_under_test          // perception | cue_encoder | … | pipeline
+    // --- Identity (required) ---
+    point_id                    // uuid
+    timestamp_utc
+    scale_id                    // see §4
+    event_type                  // pipeline_run | orchestrator_step | trainer_step | benchmark_eval | inference_turn
+    training_mode               // calibrate | stack | full_loop | inference_only | benchmark_only
+    module_under_test           // perception | cue_encoder | dmf | … | pipeline | none
+    run_kind                    // train | eval | inference | shadow | diagnostic
 
-    episode_id
-    run_id
-    corpus_slice               // phase1_fixtures | chat_7k | arc_holdout | …
-    phase                      // 1 | 2 | 3 | 4 | 5
+    episode_id                  // optional
+    run_id                      // optional
+    session_id                  // optional
+    turn_index                  // optional
+    corpus_slice                // phase1_fixtures | chat_7k | arc_holdout | bank_destination | …
+    build_phase                 // 1 | 2 | 3 | 4 | 5
+    version_tag                 // e.g. v0.2.0-chat, git describe
 
-    // Quality
-    validator_success
-    validator_score
-    module_gold_score          // optional Mode A
-    lucidity_decision
-    benchmark_name             // optional
-    benchmark_score              // optional
-    patch_promoted
-    failure_replay_cleared
+    // --- Quality (record what applies; null if N/A) ---
+    validator_success           // bool
+    validator_score             // float 0–1
+    validator_name              // exact_sense | exact_grid | …
+    module_gold_score           // float 0–1 — Mode A aggregate for this step
+    module_gold_detail          // json — per-metric breakdown (cue recall@k, span F1, …)
+    lucidity_decision           // commit | preserve_ambiguity | …
+    lucidity_false_commit       // bool — post-hoc or validator contradiction
+    lucidity_false_reject       // bool
+    decoder_faithfulness        // float 0–1 — render vs committed IR
+    benchmark_name              // arc_agi_2 | arc_agi_3 | babylm | …
+    benchmark_split             // public | private_holdout | official_submit
+    benchmark_score             // task-specific (%, accuracy, etc.)
+    benchmark_tasks_total       // int
+    benchmark_tasks_succeeded   // int
+    benchmark_attempts          // int — if multi-attempt protocol
+    audit_complete              // bool — full pipeline audit without crash
+    capability_matrix_checks    // json — optional Phase 3 checklist pass/fail
 
-    // Cost
-    wall_time_ms
-    gpu_seconds
-    llm_tokens
-    llm_cost_usd
+    // --- Orchestrator / learning (Mode C; null in pure inference) ---
+    governor_action             // NO_UPDATE | UPDATE | …
+    update_level                // 0–10 ladder
+    primary_blame_module        // string
+    patch_promoted              // bool
+    patch_rejected              // bool
+    failure_replay_cleared      // bool — 3-streak + shadow rules met
+    retention_canary_pass       // bool
+    shadow_episodes_run         // int
+    consecutive_successes       // int — on replay entry
+
+    // --- Cost / compute (required where measurable) ---
+    wall_time_ms                // float
+    gpu_seconds                 // float — 0 if CPU-only
+    cpu_seconds                 // float — optional
+    llm_prompt_tokens           // int
+    llm_completion_tokens       // int
+    llm_cost_usd                // float — computed from price table + tokens
+    cloud_cost_usd              // float — optional explicit billing
+    hardware_class              // laptop_3050ti | a100_80gb | …
+    cloud_provider              // local | aws | …
+
+    // --- Sparsity / pipeline heaviness ---
     active_trace_count
     active_basin_count
-    projector_rollout_count
-    shadow_episodes
-    updates_this_episode
-
-    // Scale context
-    episodes_seen_in_run
-    tracebank_size
-    basin_count
+    candidate_frame_count
     retrieval_budget
-    tracebank_snapshot_id
-    config_hash
-    git_sha                      // optional
+    projector_rollout_count
+    lucidity_iteration_count
+    stage_times_ms              // json — per-stage breakdown
 
-    provenance
+    // --- Memory / scale context ---
+    tracebank_size              // int — count at run start
+    basin_count
+    tracebank_snapshot_id
+    episodes_in_corpus          // corpus version size
+    episodes_seen_lifetime      // optional cumulative counter
+    config_hash                 // retrieval, stubs, registry, budgets
+    git_sha
+
+  provenance                    // adapter versions, backend (rule|llm), notes
 }
 ```
 
-No fitting. No dashboard required. **Do not block** perception/cue work on Layer 1 — a thin append is enough.
+**Do not compute** `cost_per_success`, `score_per_gpu_hour`, or frontier comparison fields at append time — those belong in §3.
 
-### Layer 2 — Summaries (Phase 1–2)
+### 2.2 Campaign record: `CampaignManifest`
 
-Periodic human-readable rollups, e.g. CLI `lucid scaling summary --scale-id …`:
+One manifest per **benchmark campaign** or **training campaign** (not per episode). Links many `ScalingPoint` rows.
 
-```
-Last 500 cue-calibrate runs on bank_destination:
-  gold recall: 82%  |  avg 38 ms/run  |  0 GPU
-Full pipeline on phase1 pack:
-  validator pass: 71%  |  avg 2.1 s/run  |  projector 12% of runs
-Orchestrator (7d):
-  patch promotion: 34%  |  replay queue depth: 12  |  cost per promoted fix: 8 shadow eps
-```
+```text
+CampaignManifest {
+    campaign_id
+    campaign_type               // benchmark | module_train | full_loop_train | ablation
+    benchmark_name              // optional
+    version_tag
+    build_phase
+    started_at
+    finished_at
 
-### Layer 3 — Curves and laws (Phase 3+ gate)
+    protocol_doc                // path or url — holdout rules, seeds, attempt limits
+    hardware_class
+    total_gpu_seconds           // sum from points or job scheduler
+    total_llm_cost_usd
+    total_wall_time_ms
 
-When you have **several compute levels** on the **same** `scale_id` (e.g. 20h, 100h, 500h GPU on same Arc setup):
+    checkpoint_ids              // list
+    config_hash
+    git_sha
 
-- Plot quality vs total GPU-hours or $
-- Fit simple trends (log-linear in episodes or power-law in compute) — **advisory only**
-- Emit snippets for `PHASE3_GO_NO_GO.md`: marginal gain, plateau estimate, fall-off flags
-- Phase 4: compare projected gain to monthly budget cap
-
-Require minimum points per curve (e.g. ≥3 scale steps, ≥100 episodes per step) before auto-recommending spend.
-
----
-
-## Integration points
-
-```
-OrchestratorRunner (inference / episode run)
-    → record ScalingPoint at end of _execute_episode
-
-Module trainers (lucid/training/trainers/*)
-    → record after each calibrate batch or epoch
-
-TrainingOrchestrator.run_one_step
-    → record after validation + governor decision + patch promote/reject
-
-lucid-gen pack / benchmark eval scripts
-    → record corpus build and eval campaigns with gpu_seconds
+    notes
+}
 ```
 
-Read existing signals; do not duplicate logic:
+### 2.3 Tracking categories (implementation checklist)
+
+Implement hooks so these categories are coverable. Each maps to `ScalingPoint` fields above.
+
+#### A — Internal efficiency (lucid-only; not frontier-comparable)
+
+| Track | Fields | Hook |
+|-------|--------|------|
+| Module gold | `module_gold_score`, `module_gold_detail` | `lucid/training/trainers/*` after calibrate |
+| Validator E2E | `validator_success`, `validator_score` | pipeline run + orchestrator |
+| Orchestrator learning | `governor_action`, `patch_*`, `shadow_*`, blame | `TrainingOrchestrator.run_one_step` |
+| Sparsity cost | `active_trace_count`, `retrieval_budget`, `projector_rollout_count` | `PipelineRun` / `RunLog` |
+| Memory scale | `tracebank_size`, `snapshot_id` | trace/basin store at run start |
+| Quality of gate | `lucidity_false_commit`, `lucidity_false_reject` | validator vs lucidity post-hoc |
+| Decoder fidelity | `decoder_faithfulness` | re-parse or claim check vs `CommittedState` |
+| Scope leaks | tag in `provenance` or dedicated bool | tests / manual audit sample |
+| Retention | `retention_canary_pass` | shadow evaluator |
+| Replay health | `failure_replay_cleared`, `consecutive_successes` | `FailureReplayStore` |
+
+#### B — Frontier-comparable (public scoreboard)
+
+| Track | Fields | Hook |
+|-------|--------|------|
+| Benchmark score | `benchmark_*` | eval scripts Phase 3+ |
+| Audit coverage | `audit_complete` | pipeline runner — no silent crash |
+| Reproducibility | `config_hash`, `git_sha`, seed in `CampaignManifest` | campaign + fixed episode pack |
+| Attempts protocol | `benchmark_attempts` | eval harness |
+| **Campaign totals** | `CampaignManifest.total_gpu_seconds`, $ | sum points or job wrapper |
+
+#### C — Differentiation (your architecture proof; not on leaderboards)
+
+| Track | Fields | Hook |
+|-------|--------|------|
+| Capability matrix | `capability_matrix_checks` | Phase 3 test suite |
+| Plural until lucidity | log `lucidity_decision` + basin margins in `provenance` | existing run logs |
+| Lazy collapse | audit sample: no early commit | manual or automated audit scan |
+
+#### D — Inference vs training (separate `run_kind`)
+
+| Track | Fields | Hook |
+|-------|--------|------|
+| Training | `run_kind=train`, orchestrator fields populated | trainers + orchestrator |
+| Inference | `run_kind=inference`, `training_mode=inference_only` | `OrchestratorRunner`, `lucid chat`, API |
+| Eval | `run_kind=eval`, `benchmark_*` populated | eval CLI |
+| Shadow | `run_kind=shadow` | shadow evaluator |
+
+**Separate storage or filter** when plotting — do not mix train GPU-h with inference ms/turn in one “cost efficiency” chart without labeling.
+
+### 2.4 External reference table (implementation: static file, not runtime)
+
+Maintain a **human-curated** file (not auto-generated from secrets):
+
+```text
+lucid/audit/scaling/frontier_reference.csv
+```
+
+Columns:
+
+```text
+system_label,benchmark_name,benchmark_score,benchmark_date,
+train_compute_note,train_gpu_hours_est,train_tokens_est,params_est,
+inference_cost_note,source_url,confidence  // measured | leaderboard | estimated | order_of_magnitude
+```
+
+Updated manually when papers/leaderboards change. **Never** pretend these are measured from your runs.
+
+### 2.5 Implementation layout
+
+```text
+lucid/audit/scaling.py        # types, record, extract, summarize, export
+
+audit/scaling/                # runtime data (repo audit tree)
+  points.jsonl
+  exports/
+  frontier_reference.csv
+```
+
+### 2.6 Hooks (required)
+
+| Source | When to record |
+|--------|----------------|
+| `OrchestratorRunner._execute_episode` | End of episode; `event_type=pipeline_run` |
+| `TrainingOrchestrator.run_one_step` | After validation + promote/reject; `orchestrator_step` |
+| `lucid/training/trainers/*` | End of calibrate batch/epoch; `trainer_step` |
+| Benchmark eval CLI | Per campaign + optional per-task; `benchmark_eval` |
+| `lucid chat` / API turn | Per turn; `inference_turn` |
+| `lucid-gen pack` | Optional single point for corpus build wall time |
+
+Read existing structures — do not duplicate instrumentation:
 
 - `RunLog`, `CostMetrics` (`lucid/ir/training.py`)
-- `TrainingOrchestrator.get_status()` metrics
-- `TrainingGovernor.metrics()` margin stats
+- `PipelineRun.cost_metrics`, `stage_records`
+- `TrainingOrchestrator.get_status()`, `TrainingGovernor.metrics()`
 - `FailureReplayStore.metrics()`
-- Audit logger run directories
 
-Write artifacts to `lucid/audit/scaling/{scale_id}.jsonl` or central `scaling_points.jsonl` with `scale_id` in each row.
+### 2.7 CLI (universal `lucid` entrypoint)
 
----
+```bash
+lucid scaling summary
+lucid scaling summary --scale-id cue_encoder:calibrate:bank_destination:abc123
+lucid scaling export --out summary_by_scale_id.csv
+lucid scaling path
+```
 
-## Module vs pipeline — example questions
-
-| Training | Question the observatory answers |
-|----------|----------------------------------|
-| Cue Mode A | Does gold trace recall keep rising with episodes, or plateau? |
-| Perception Mode A | Span/marker quality vs wall time (rule vs LLM $)? |
-| Stack Mode B | Real cue + gold DMF → binding pass better than stub? |
-| Full Mode C | Validator pass vs 150k corpus; cost per success vs Phase 2 baseline? |
-| Orchestrator | Promoted patches per GPU-hour; replay queue stuck? |
-| Phase 3 eval | Arc holdout % vs GPU-hours; audit coverage % vs crash rate |
+Layer 1 works without plots; `export` writes CSV under `audit/scaling/exports/`.
 
 ---
 
-## Build order vs `build.md`
+## §3 Post-implementation — inference from tracked data
 
-| When | Observatory deliverable |
-|------|-------------------------|
-| **First module training** | Layer 1 append only |
-| **Phase 1 complete** | Summaries for phase1 fixtures; baseline cost per success |
-| **Phase 2 chat** | Add latency vs session length; LLM decoder $ if used |
-| **Phase 3** | Curves for Arc/BabyLM vs GPU-hours; auto-sections for go/no-go |
-| **Phase 4** | Cost per success vs memory tier; governor no-update rate vs $ |
+Everything here is **derived** from `ScalingPoint` + `CampaignManifest` + `frontier_reference.csv`. Safe to re-run when formulas change.
 
-Do **not** delay Phase 1 pipeline proof waiting for Layer 3 fits.
+### 3.1 Derived metrics (formulas)
+
+Compute in `lucid/audit/scaling.py` (`summarize_points`, `export_summary_csv`).
+
+#### Per window (scale_id + date range)
+
+```text
+success_rate           = count(validator_success) / count(points)
+gold_mean              = mean(module_gold_score)
+cost_per_success       = sum(gpu_seconds) / max(1, count(validator_success))
+                        # also wall_time_ms, llm_cost_usd variants
+successes_per_gpu_hour = count(validator_success) / (sum(gpu_seconds)/3600)
+patches_per_gpu_hour   = count(patch_promoted) / (sum(gpu_seconds)/3600)
+no_update_rate         = count(governor_action==NO_UPDATE) / count(orchestrator steps)
+replay_queue_depth     = from FailureReplayStore snapshot at window end
+```
+
+#### Between two checkpoints (marginal)
+
+```text
+delta_score            = benchmark_score_B - benchmark_score_A
+delta_gpu_hours        = (sum gpu_seconds)_B - (sum gpu_seconds)_A
+score_per_100_gpu_h    = delta_score / delta_gpu_hours * 100
+score_per_10k_usd      = delta_score / (delta_usd / 10000)
+marginal_gain          = delta_quality / delta_compute   # generic
+```
+
+#### Plateau heuristic (advisory)
+
+```text
+plateau_detected if:
+  last N scale steps: abs(delta_score) < epsilon
+  AND sum(additional_gpu_seconds) > plateau_min_compute
+```
+
+#### Fall off heuristic (advisory)
+
+```text
+falloff_detected if:
+  success_rate dropped > falloff_threshold vs previous window
+  OR failure_replay_queue_depth rising while patch_promotion_rate high
+  OR retention_canary_pass rate dropped
+```
+
+### 3.2 Layer 2 — Text summaries (no charts)
+
+Output of `lucid scaling summary`:
+
+```text
+scale_id: cue_encoder:calibrate:phase1:abc123
+  points: 420  |  gold_mean: 0.91  |  wall_ms p50: 38
+  plateau_warning: false
+
+scale_id: pipeline:full_loop:phase1:abc123
+  validator_pass: 0.71  |  cost_per_success: 2.1s  |  projector_rate: 0.12
+```
+
+### 3.3 Layer 3 — Internal curves (lucid-only)
+
+| Chart ID | X | Y | Filter |
+|----------|---|---|--------|
+| `L3-module-gold` | episodes trained or trainer step | `module_gold_score` | Mode A, one `module_under_test` |
+| `L3-validator-pass` | corpus size or campaign day | `success_rate` | Mode C |
+| `L3-cost-per-success` | build_phase or week | `cost_per_success` | Mode C |
+| `L3-orchestrator` | week | `patches_per_gpu_hour`, `no_update_rate` | orchestrator steps |
+| `L3-plateau` | cumulative gpu_seconds | benchmark or validator score | one `scale_id` |
+
+Fit (optional, Phase 3+): log-linear in episodes or power-law in compute — **advisory**, report R² and wide confidence bands.
+
+### 3.4 Publication charts — frontier comparison
+
+Use **only** for storytelling where shared benchmark exists. Always footnote frontier points.
+
+#### Chart P1 — Score vs total spend (primary “cheaper” chart)
+
+```text
+X: total_gpu_hours OR total_usd (log scale) for campaign
+Y: benchmark_score (single task per chart)
+Points:
+  - lucid: from CampaignManifest + aggregate (measured)
+  - frontier: from frontier_reference.csv (estimated / leaderboard)
+```
+
+**Caption template:**
+
+```text
+Lucid points: measured train+eval GPU-hours for stated version.
+Frontier points: public leaderboard scores; training compute estimated (see appendix).
+```
+
+#### Chart P2 — Marginal efficiency (bar)
+
+```text
+Bars: score_per_100_gpu_h between consecutive lucid checkpoints
+Optional: single estimated bar for a named external system (wide error bar or "order of magnitude")
+```
+
+#### Chart P3 — Campaign learning curve
+
+```text
+X: cumulative gpu_hours within one Arc campaign
+Y: holdout score
+Only lucid measured points — do not draw frontier training curve (unknown)
+Optional: horizontal band = public SOTA range from leaderboard
+```
+
+#### Chart P4 — Inference cost (separate figure)
+
+```text
+X: ms per turn OR $ per 1000 turns
+Y: task success or user-facing quality proxy
+Compare: lucid local run vs API baseline (your measured token usage × public $/token)
+Title must say INFERENCE not TRAINING
+```
+
+#### Chart P5 — Differentiation dashboard (not vs frontier)
+
+Capability matrix pass rate, audit coverage %, false commit rate — internal only.
+
+### 3.5 What frontier labs do *not* give you
+
+Do not expect public data for:
+
+- Per-module gold recall curves  
+- Cost per promoted patch  
+- Your `ScalingPoint` schema  
+
+**Do expect** public benchmark scores; occasional order-of-magnitude train compute in papers; API $ for inference proxies.
+
+Your graphs are **more transparent on lucid cost-to-score** than most labs; frontier dots on P1/P2 are **estimated**, not copied from their internal logs.
+
+### 3.6 Export pipeline (post-implementation)
+
+```text
+audit/scaling/points.jsonl
+        │
+        └─► lucid scaling export ──► audit/scaling/exports/*.csv
+                                      (plot externally; frontier_reference.csv for comparison rows)
+```
+
+Inputs to Phase 3 doc generator:
+
+```text
+PHASE3_GO_NO_GO.md ← template + aggregate metrics + plateau/falloff flags + P1 chart path
+```
+
+### 3.7 Minimum points before claiming a “scaling law”
+
+| Claim | Minimum data |
+|-------|----------------|
+| Module plateau | ≥3 episode scales on same `scale_id`, gold delta &lt; ε on last two |
+| Benchmark marginal gain | ≥3 cumulative GPU levels on same benchmark protocol |
+| Cheaper than frontier | ≥1 measured lucid campaign + sourced frontier_reference row + log-scale X |
+| Phase 4 spend go | `build.md` thresholds + plateau not detected + falloff false |
 
 ---
 
-## Anti-patterns
+## §4 Training modes & `scale_id`
 
-**Do not use one global “loss” curve.**
+From `build.md`:
 
-There is no single cross-entropy. Use validator pass, gold match, lucidity checks, benchmarks.
+| Mode | `training_mode` | `module_under_test` |
+|------|-------------------|---------------------|
+| A — Calibrate | `calibrate` | `perception`, `cue_encoder`, … |
+| B — Stack | `stack` | module under test |
+| C — Full loop | `full_loop` | `pipeline` |
+| Inference only | `inference_only` | `pipeline` or `none` |
+| Benchmark eval | `benchmark_only` | `pipeline` |
 
-**Do not merge Mode A and Mode C without tags.**
+```text
+scale_id = {module_under_test}:{training_mode}:{corpus_slice}:{config_hash}
+```
 
-Cue calibration looks “better” than full pipeline — that is expected, not contradiction.
-
-**Do not treat patch count like gradient steps.**
-
-Patches are sparse and correlated. Track **promoted fixes that clear failure replay** (patch + episode shadow + 3-streak).
-
-**Do not compare scales with different `config_hash`.**
-
-Changing retrieval budget, tracebank snapshot, or stubs invalidates the curve.
-
-**Do not extrapolate Phase 4 spend from &lt;3 compute points.**
-
-Plateau detection needs multiple measured levels on the same setup.
-
-**Do not block training on dashboards.**
-
-Receipt log first; fitting and UI later.
+`config_hash` changes when: retrieval budget, tracebank snapshot, stub versions, seed policy, trainer hyperparameters.
 
 ---
 
-## Relation to other specs
+## §5 Plateau vs fall off (inferred in §3)
+
+### Plateau
+
+Spend more; quality barely moves. **Action:** stop scaling that module/corpus; move bottleneck.
+
+### Fall off
+
+Spend more; quality drops or replay/retention worsens. **Action:** fix orchestrator/memory; do not increase Phase 4 budget (`build.md`).
+
+Detection: §3.1 heuristics on aggregated windows — not single-run flags.
+
+---
+
+## §6 Build order vs `build.md`
+
+| Phase | Implementation (§2) | Post-implementation (§3) |
+|-------|---------------------|---------------------------|
+| First training | `ScalingPoint` append + hooks on runner + one trainer | `scaling summary` text only |
+| Phase 1 done | All trainers + orchestrator step | `L3-module-gold`, cost per success baseline |
+| Phase 2 | Inference turn points; LLM $ | P4 inference chart optional |
+| Phase 3 | `CampaignManifest`; benchmark fields | P1, P2, P3; `PHASE3_GO_NO_GO` export; frontier_reference.csv |
+| Phase 4 | Memory tier tags | Cost vs tier; governor no-update vs $ |
+
+Do **not** block Phase 1 pipeline on plots or frontier CSV.
+
+---
+
+## §7 Anti-patterns
+
+### Implementation
+
+- Storing derived metrics in JSONL without raw fields (can't recompute)  
+- Omitting `config_hash` / `scale_id`  
+- Mixing train and inference in one point without `run_kind`  
+- Auto-scraping frontier training logs as “measured”
+
+### Post-implementation / graphs
+
+- Lucid module gold vs frontier MMLU on same axes  
+- Linear X from 1 GPU-h to frontier pretrain FLOPs without log scale  
+- Training $ for lucid vs API inference $ for frontier on one chart  
+- Frontier points without `confidence` / source in appendix  
+- “10,000× cheaper” without shared benchmark + sourced estimates  
+- Plotting Mode A and Mode C as one line  
+
+### Comparison narrative
+
+**Defensible:** “Arc holdout X% after Y measured GPU-hours; published systems at similar scores are commonly associated with far larger training compute (see frontier_reference.csv).”
+
+**Indefensible:** “We beat GPT-5 on cost” without shared task and sourced compute.
+
+---
+
+## §8 Relation to other specs
 
 | Spec | Relationship |
 |------|----------------|
-| `training/training orchestrator.md` | Source of patch, shadow, replay, promotion metrics |
-| `training/training quantization.md` | `NO_UPDATE` runs are cheap wins — log them for true cost per **learning** event |
-| `memory quantization.md` | Tier promotion changes cost per retrieval — tag `tracebank_snapshot_id` |
-| `build.md` | Phase 3 capability matrix + benchmark thresholds consume observatory reports |
+| `training/training orchestrator.md` | Orchestrator fields, replay clear, retention canary |
+| `training/training quantization.md` | Log `NO_UPDATE` for true cost per learning event |
+| `memory quantization.md` | `tracebank_snapshot_id`, tier changes |
+| `build.md` | Phase 3 matrix + benchmark gates consume §3 exports |
 
 ---
 
-## Summary
+## §9 Summary
 
-```
-Scaling observatory = receipt log + cost/quality reports + (later) curves for spend decisions
-Measures:   quality vs compute, data, sparsity, memory — not parameter count
-Modes:      separate curves for calibrate (A), stack (B), full loop (C)
-Plateau:    spend more, gain little → move on or stop
-Fall off:   spend more, get worse → fix before scaling cloud budget
-Build:      Layer 1 with first training; Layer 3 for Phase 3 go/no-go
-North star: capability gained per update dollar (and successes per GPU-hour)
+```text
+IMPLEMENTATION (track):
+  ScalingPoint per run/step/turn/campaign
+  CampaignManifest per benchmark/train campaign
+  frontier_reference.csv (manual, external)
+  Hooks: runner, orchestrator, trainers, eval CLI
+  Store: audit/scaling/points.jsonl
+
+POST-IMPLEMENTATION (infer):
+  Aggregates: cost_per_success, score_per_100_gpu_h, plateau/falloff flags
+  Internal charts: L3-* (module, validator, orchestrator)
+  Public charts: P1 score vs spend, P2 marginal bars, P3 campaign curve, P4 inference separate
+  Outputs: PHASE3_GO_NO_GO snippets, model card efficiency appendix
+
+North star: capability gained per update dollar (train) and score per GPU-hour (eval campaigns)
 ```
 
-The observatory makes “is scaling spend justified?” a **measured** question instead of a guess.
+The observatory separates **honest measurement** (implementation) from **interpretation and comparison** (graphs and docs derived later).
