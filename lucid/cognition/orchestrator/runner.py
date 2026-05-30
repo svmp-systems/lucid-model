@@ -126,6 +126,12 @@ class OrchestratorRunner:
 
         run.cost_metrics.wall_time_ms = max(0.0, _now_ms() - t0)
         self.audit.write_pipeline_run(run)
+        try:
+            from lucid.audit.scaling import record_pipeline_run
+
+            record_pipeline_run(run)
+        except Exception:  # noqa: BLE001 — scaling must not break pipeline runs
+            pass
         return run
 
     def _execute_episode(self, run: PipelineRun, episode: Episode) -> None:

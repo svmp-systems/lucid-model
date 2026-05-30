@@ -165,6 +165,47 @@ def _cmd_gen(args: argparse.Namespace) -> int:
     return gen_main(args.args)
 
 
+def _cmd_scaling_summary(args: argparse.Namespace) -> int:
+    from lucid.audit.scaling import ScalingConfig, format_summary, load_points, summarize_file, summarize_points
+
+    cfg = ScalingConfig.from_env()
+    if args.scale_id:
+        print(format_summary(summarize_file(cfg, scale_id=args.scale_id)))
+        return 0
+    points = load_points(cfg.points_path)
+    if not points:
+        print(f"no points at {cfg.points_path}", file=sys.stderr)
+        return 1
+    by_scale: dict[str, list] = {}
+    for row in points:
+        by_scale.setdefault(str(row.get("scale_id") or ""), []).append(row)
+    for sid in sorted(by_scale):
+        print(format_summary(summarize_points(by_scale[sid], scale_id=sid)))
+        print()
+    return 0
+
+
+def _cmd_scaling_export(args: argparse.Namespace) -> int:
+    from lucid.audit.scaling import ScalingConfig, export_summary_csv, load_points
+
+    cfg = ScalingConfig.from_env()
+    points = load_points(cfg.points_path, scale_id=args.scale_id or None)
+    if not points:
+        print(f"no points at {cfg.points_path}", file=sys.stderr)
+        return 1
+    out = cfg.exports_dir / (args.out or "summary_by_scale_id.csv")
+    export_summary_csv(points, out)
+    print(out)
+    return 0
+
+
+def _cmd_scaling_path(_args: argparse.Namespace) -> int:
+    from lucid.audit.scaling import ScalingConfig
+
+    print(ScalingConfig.from_env().points_path)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lucid")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -203,6 +244,21 @@ def _build_parser() -> argparse.ArgumentParser:
     gen_parser = sub.add_parser("gen", help="Run training generator commands")
     gen_parser.add_argument("args", nargs=argparse.REMAINDER)
     gen_parser.set_defaults(func=_cmd_gen)
+
+    scaling_parser = sub.add_parser("scaling", help="Scaling observatory (cost/quality receipts)")
+    scaling_sub = scaling_parser.add_subparsers(dest="scaling_cmd", required=True)
+
+    scaling_summary = scaling_sub.add_parser("summary", help="Rollup of scaling points")
+    scaling_summary.add_argument("--scale-id", default="", help="Filter to one scale_id")
+    scaling_summary.set_defaults(func=_cmd_scaling_summary)
+
+    scaling_export = scaling_sub.add_parser("export", help="CSV aggregate by scale_id")
+    scaling_export.add_argument("--scale-id", default="", help="Filter before export")
+    scaling_export.add_argument("--out", default="", help="Filename under audit/scaling/exports/")
+    scaling_export.set_defaults(func=_cmd_scaling_export)
+
+    scaling_path = scaling_sub.add_parser("path", help="Print points.jsonl path")
+    scaling_path.set_defaults(func=_cmd_scaling_path)
     return parser
 
 

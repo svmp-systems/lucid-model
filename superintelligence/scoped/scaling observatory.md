@@ -20,7 +20,7 @@ training/training orchestrator.md — capability gained per update dollar
 training/training quantization.md — NO_UPDATE on high-margin success
 ```
 
-Implementation target: `lucid/training/scaling/`. Audits: `lucid/audit/scaling/`.
+Implementation: `lucid/audit/scaling.py` (Layer 1–2). Data: `audit/scaling/points.jsonl` (`LUCID_SCALING_DIR`). CLI: `lucid scaling summary|export|path`. Frontier template: `audit/scaling/frontier_reference.csv`.
 
 ---
 
@@ -258,19 +258,12 @@ Updated manually when papers/leaderboards change. **Never** pretend these are me
 ### 2.5 Implementation layout
 
 ```text
-lucid/training/scaling/
-  __init__.py
-  point.py              # ScalingPoint, CampaignManifest dataclasses
-  record.py             # append_jsonl(path, point)
-  scale_id.py           # build scale_id from config
-  extract.py            # RunLog / PipelineRun / orchestrator → ScalingPoint
-  config.py             # paths, LLM $/token, hardware labels
+lucid/audit/scaling.py        # types, record, extract, summarize, export
 
-lucid/audit/scaling/
-  scaling_points.jsonl          # or per scale_id/*.jsonl
-  campaigns/*.json
+audit/scaling/                # runtime data (repo audit tree)
+  points.jsonl
+  exports/
   frontier_reference.csv
-  exports/                      # post-implementation CSVs (generated)
 ```
 
 ### 2.6 Hooks (required)
@@ -291,15 +284,16 @@ Read existing structures — do not duplicate instrumentation:
 - `TrainingOrchestrator.get_status()`, `TrainingGovernor.metrics()`
 - `FailureReplayStore.metrics()`
 
-### 2.7 Implementation CLI (minimal)
+### 2.7 CLI (universal `lucid` entrypoint)
 
 ```bash
-lucid scaling record          # internal test append
-lucid scaling summary --scale-id …   # Layer 2 — reads only, no new tracking
-lucid scaling export-csv --campaign …  # for plotting — §3
+lucid scaling summary
+lucid scaling summary --scale-id cue_encoder:calibrate:bank_destination:abc123
+lucid scaling export --out summary_by_scale_id.csv
+lucid scaling path
 ```
 
-Layer 1 must work **without** matplotlib or frontier CSV.
+Layer 1 works without plots; `export` writes CSV under `audit/scaling/exports/`.
 
 ---
 
@@ -309,7 +303,7 @@ Everything here is **derived** from `ScalingPoint` + `CampaignManifest` + `front
 
 ### 3.1 Derived metrics (formulas)
 
-Compute in `lucid/training/scaling/aggregate.py` (or export script).
+Compute in `lucid/audit/scaling.py` (`summarize_points`, `export_summary_csv`).
 
 #### Per window (scale_id + date range)
 
@@ -441,14 +435,10 @@ Your graphs are **more transparent on lucid cost-to-score** than most labs; fron
 ### 3.6 Export pipeline (post-implementation)
 
 ```text
-scaling_points.jsonl
+audit/scaling/points.jsonl
         │
-        ├─► aggregate.py ──► exports/summary_by_scale_id.csv
-        │
-        ├─► export_campaign.py ──► exports/campaigns/{id}.csv
-        │
-        └─► plot_efficiency.py ──► exports/figures/P1_score_vs_gpuh.png
-                                      (reads frontier_reference.csv)
+        └─► lucid scaling export ──► audit/scaling/exports/*.csv
+                                      (plot externally; frontier_reference.csv for comparison rows)
 ```
 
 Inputs to Phase 3 doc generator:
@@ -561,7 +551,7 @@ IMPLEMENTATION (track):
   CampaignManifest per benchmark/train campaign
   frontier_reference.csv (manual, external)
   Hooks: runner, orchestrator, trainers, eval CLI
-  Store: lucid/audit/scaling/*.jsonl
+  Store: audit/scaling/points.jsonl
 
 POST-IMPLEMENTATION (infer):
   Aggregates: cost_per_success, score_per_100_gpu_h, plateau/falloff flags

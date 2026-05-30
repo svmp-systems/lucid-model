@@ -956,6 +956,20 @@ class TrainingOrchestrator:
                 status=self.get_status(),
                 error_message=error_message,
             )
+            try:
+                from lucid.audit.scaling import record_orchestrator_step
+
+                record_orchestrator_step(
+                    action=action,
+                    episode=episode,
+                    run_log=run_log,
+                    validation=validation,
+                    diagnosis=diagnosis,
+                    patch_result=patch_result,
+                    step_index=self.step_index,
+                )
+            except Exception:  # noqa: BLE001 — scaling must not break training loop
+                pass
 
     def run(self, n_steps: int) -> None:
         for _ in range(n_steps):
