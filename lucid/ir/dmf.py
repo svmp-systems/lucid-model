@@ -1,4 +1,4 @@
-"""Layer 3 — dynamic memory field (tracebank) input and output."""
+"""Layer 3 dynamic memory field input/output contracts."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from lucid.ir.cue import CueCloud
 
 @dataclass(slots=True)
 class ActiveTrace:
-    trace_id: str
-    activation: float
+    trace_id: str = ""
+    activation: float = 0.0
     cluster_id: str = ""
     heat_tier: str = "hot"
     is_novel: bool = False
@@ -22,6 +22,14 @@ class TraceCluster:
     cluster_id: str
     member_trace_ids: list[str] = field(default_factory=list)
     cluster_strength: float = 0.0
+    cluster_coherence: float = 0.0
+
+
+@dataclass(slots=True)
+class NoveltySignal:
+    region_or_evidence_ref: str
+    novelty_score: float
+    suggested_action: str = "widen_search"
 
 
 @dataclass(slots=True)
@@ -46,9 +54,14 @@ class DmfInput:
 class DmfOutput:
     active_traces: list[ActiveTrace] = field(default_factory=list)
     trace_clusters: list[TraceCluster] = field(default_factory=list)
-    novelty_trace_ids: list[str] = field(default_factory=list)
+    novelty_signals: list[NoveltySignal] = field(default_factory=list)
     conflict_signals: list[ConflictSignal] = field(default_factory=list)
     top_margin: float = 0.0
     second_margin: float = 0.0
+    activation_entropy: float = 0.0
+    coverage_score: float = 0.0
+    adjusted_activations: dict[str, float] = field(default_factory=dict)
     uncertainty_summary: str = ""
+    tracebank_snapshot_id: str = ""
     provenance: Provenance = field(default_factory=Provenance)
+    audit_log: dict[str, str | int | float] = field(default_factory=dict)

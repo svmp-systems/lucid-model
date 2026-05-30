@@ -1,6 +1,7 @@
 """Audit logger — readable + machine-parseable JSON per stage."""
 
 from lucid.audit.inspect import format_manifest, print_run
+from lucid.audit.dmf import DmfTraceUpdateRecord, DmfUpdateAuditLogger
 from lucid.audit.logger import (
     AuditLogger,
     RunAuditManifest,
@@ -21,6 +22,8 @@ from lucid.audit.scaling import (
 
 __all__ = [
     "AuditLogger",
+    "DmfTraceUpdateRecord",
+    "DmfUpdateAuditLogger",
     "RunAuditManifest",
     "ScalingConfig",
     "ScalingPoint",
