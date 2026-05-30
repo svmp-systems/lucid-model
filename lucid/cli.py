@@ -12,12 +12,15 @@ from lucid.cognition.input.perception import PerceptionConfig, perceive, to_comp
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.ir.binding import CandidateFrame
-from lucid.ir.common import Modality
+from lucid.ir.common import ComputePolicy, Modality, MaturityState
+from lucid.ir.cue import CueCloud, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
-from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfOutput
+from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.serde import from_json, to_json
 from lucid.ir.training import Episode
+from lucid.memory.dmf import DmfTraceRecord, DynamicMemoryField
+from lucid.training.dmf import learn_from_episode
 from lucid.training.orchestrator.orchestrator import (
     BlameAssigner,
     RunLog,
@@ -158,6 +161,87 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
+    print(to_json(out))
+    return 0
+
+
+def _parse_cue(text: str) -> TraceActivationRequest:
+    if "=" not in text:
+        raise ValueError(f"cue must look like cue_key=weight, got {text!r}")
+    key, raw_weight = text.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError("cue key cannot be empty")
+    return TraceActivationRequest(trace_id=key, weight=float(raw_weight.strip()))
+
+
+def _dmf_fixture(audit_dir: str) -> tuple[DynamicMemoryField, CueCloud]:
+    dmf = DynamicMemoryField(
+        [
+            DmfTraceRecord(
+                trace_id="t0001",
+                alias="money/value-like",
+                cue_affinities={"money": 0.92, "cash": 0.72},
+                cluster_id="c_value",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+            DmfTraceRecord(
+                trace_id="t0002",
+                alias="placed/transfer-like",
+                cue_affinities={"placed": 0.84, "deposit": 0.76},
+                cluster_id="c_transfer",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+            DmfTraceRecord(
+                trace_id="t0003",
+                alias="outdoor/water-like",
+                cue_affinities={"kayaking": 0.88, "river": 0.7},
+                cluster_id="c_outdoor",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+            DmfTraceRecord(
+                trace_id="t0004",
+                alias="bank ambiguity-like",
+                cue_affinities={"bank": 0.82},
+                cluster_id="c_place",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+        ],
+        audit_base_dir=audit_dir,
+    )
+    cue = CueCloud(
+        primitive_trace_activations=[
+            TraceActivationRequest(trace_id="money", weight=0.9, evidence_refs=["u_money"]),
+            TraceActivationRequest(trace_id="placed", weight=0.8, evidence_refs=["u_placed"]),
+            TraceActivationRequest(trace_id="bank", weight=0.75, evidence_refs=["u_bank"]),
+            TraceActivationRequest(trace_id="kayaking", weight=0.65, evidence_refs=["u_kayaking"]),
+        ],
+        retrieval_budget_used=4,
+    )
+    return dmf, cue
+
+
+def _cmd_dmf(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown DMF fixture: {args.fixture}", file=sys.stderr)
+        return 2
+    try:
+        dmf, cue = _dmf_fixture(args.audit_dir)
+        if args.cue:
+            cue = CueCloud(primitive_trace_activations=[_parse_cue(item) for item in args.cue])
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if args.learn:
+        learn_from_episode(dmf, cue, winning_trace_indices=[0], spawn_if_novel=False)
+
+    out = dmf.run(
+        DmfInput(
+            cue_cloud=cue,
+            compute_policy=ComputePolicy(max_active_traces=args.max_active),
+        )
+    )
     print(to_json(out))
     return 0
 
@@ -330,6 +414,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lucidity feedback token, e.g. SEARCH_WIDER",
     )
     context_parser.set_defaults(func=_cmd_context_op)
+
+    dmf_parser = sub.add_parser("dmf", help="Run DMF on a built-in tracebank fixture")
+    dmf_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    dmf_parser.add_argument(
+        "--cue",
+        action="append",
+        default=[],
+        help="Override fixture cue with cue_key=weight; repeat for multiple cues",
+    )
+    dmf_parser.add_argument("--max-active", type=int, default=4)
+    dmf_parser.add_argument("--audit-dir", default="audit/dmf")
+    dmf_parser.add_argument("--learn", action="store_true", help="Apply one audited learning step")
+    dmf_parser.set_defaults(func=_cmd_dmf)
 
     governor_parser = sub.add_parser("governor", help="Run training governor on a fixture")
     governor_parser.add_argument(

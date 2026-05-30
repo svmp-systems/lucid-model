@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lucid.ir.common import AuditEnvelope, Provenance
-from lucid.ir.pipeline import PipelineRun, RunContext, StageName, StageResult
+from lucid.ir.pipeline import PipelineRun, RunContext, StageName
 from lucid.ir.serde import from_dict, to_dict, to_json
 
 SCHEMA_VERSION = 1

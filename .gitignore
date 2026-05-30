@@ -219,7 +219,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Local pipeline audit artifacts (per-run JSON trees)
-audit/
+/audit/
 
 # Lucid generator output (rebuild with lucid-gen; recipes stay in git)
 data/generated/
