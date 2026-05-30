@@ -19,6 +19,24 @@ from lucid.ir.perception import PerceptionInput
 from lucid.ir.perception import CandidateUnit, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.serde import from_json, to_json
 from lucid.ir.training import Episode
+<<<<<<< Updated upstream
+=======
+from lucid.memory.dmf import DmfTraceRecord, DynamicMemoryField
+from lucid.training.dmf import learn_from_episode
+from lucid.training.orchestrator.orchestrator import (
+    BlameAssigner,
+    RunLog,
+    TrainingGovernor,
+    UpdatePlanner,
+    ValidationResult,
+)
+from lucid.training.quantization import (
+    RetrievalQualitySample,
+    binary_signature,
+    measure_candidate_quality,
+    rank_by_popcount,
+)
+>>>>>>> Stashed changes
 
 
 def _episode_from_file(path: Path) -> Episode:
@@ -153,6 +171,198 @@ def _cmd_context_op(args: argparse.Namespace) -> int:
     return 0
 
 
+<<<<<<< Updated upstream
+=======
+def _parse_cue(text: str) -> TraceActivationRequest:
+    if "=" not in text:
+        raise ValueError(f"cue must look like cue_key=weight, got {text!r}")
+    key, raw_weight = text.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError("cue key cannot be empty")
+    return TraceActivationRequest(trace_id=key, weight=float(raw_weight.strip()))
+
+
+def _dmf_fixture(audit_dir: str) -> tuple[DynamicMemoryField, CueCloud]:
+    dmf = DynamicMemoryField(
+        [
+            DmfTraceRecord(
+                trace_id="t0001",
+                alias="money/value-like",
+                cue_affinities={"money": 0.92, "cash": 0.72},
+                cluster_id="c_value",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+            DmfTraceRecord(
+                trace_id="t0002",
+                alias="placed/transfer-like",
+                cue_affinities={"placed": 0.84, "deposit": 0.76},
+                cluster_id="c_transfer",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+            DmfTraceRecord(
+                trace_id="t0003",
+                alias="outdoor/water-like",
+                cue_affinities={"kayaking": 0.88, "river": 0.7},
+                cluster_id="c_outdoor",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+            DmfTraceRecord(
+                trace_id="t0004",
+                alias="bank ambiguity-like",
+                cue_affinities={"bank": 0.82},
+                cluster_id="c_place",
+                maturity_state=MaturityState.ACTIVE.value,
+            ),
+        ],
+        audit_base_dir=audit_dir,
+    )
+    cue = CueCloud(
+        primitive_trace_activations=[
+            TraceActivationRequest(trace_id="money", weight=0.9, evidence_refs=["u_money"]),
+            TraceActivationRequest(trace_id="placed", weight=0.8, evidence_refs=["u_placed"]),
+            TraceActivationRequest(trace_id="bank", weight=0.75, evidence_refs=["u_bank"]),
+            TraceActivationRequest(trace_id="kayaking", weight=0.65, evidence_refs=["u_kayaking"]),
+        ],
+        retrieval_budget_used=4,
+    )
+    return dmf, cue
+
+
+def _cmd_dmf(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown DMF fixture: {args.fixture}", file=sys.stderr)
+        return 2
+    try:
+        dmf, cue = _dmf_fixture(args.audit_dir)
+        if args.cue:
+            cue = CueCloud(primitive_trace_activations=[_parse_cue(item) for item in args.cue])
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if args.learn:
+        learn_from_episode(dmf, cue, winning_trace_indices=[0], spawn_if_novel=False)
+
+    out = dmf.run(
+        DmfInput(
+            cue_cloud=cue,
+            compute_policy=ComputePolicy(max_active_traces=args.max_active),
+        )
+    )
+    print(to_json(out))
+    return 0
+
+
+def _governor_fixture(kind: str) -> tuple[RunLog, ValidationResult]:
+    if kind == "high-margin":
+        return (
+            RunLog(
+                episode_id="governor-high-margin",
+                raw_input="ok",
+                evidence_graph={"entities": ["ok"]},
+                cue_cloud={"cue": "ok"},
+                active_traces=["t0001"],
+                trace_clusters=[],
+                candidate_bindings=[{"binding_id": "bind-1"}],
+                context_frames=[{"frame_id": "ctx-1"}],
+                scoped_trace_assignments={"t0001": "ctx-1"},
+                interference_edges=[],
+                active_basins=[{"basin_id": "b0001"}],
+                basin_assemblies={"answer": "ok"},
+                lucidity_features={},
+                lucidity_decision="commit",
+                lucidity_margin=0.91,
+                projection_result=None,
+                decoder_output={"answer": "ok"},
+                validator_result={},
+                cost_metrics={"stages_run": 8, "projector_called": False},
+            ),
+            ValidationResult(True, 1.0, [], {"answer": "ok"}, 1.0),
+        )
+    if kind == "failure":
+        return (
+            RunLog(
+                episode_id="governor-failure",
+                raw_input="bad",
+                evidence_graph={"entities": ["bad"]},
+                cue_cloud={"cue": "bad"},
+                active_traces=["t0001"],
+                trace_clusters=[],
+                candidate_bindings=[{"binding_id": "bind-1"}],
+                context_frames=[{"frame_id": "ctx-1"}],
+                scoped_trace_assignments={"t0001": "ctx-1"},
+                interference_edges=[],
+                active_basins=[{"basin_id": "b0001"}],
+                basin_assemblies={"answer": "wrong"},
+                lucidity_features={},
+                lucidity_decision="commit",
+                lucidity_margin=0.88,
+                projection_result=None,
+                decoder_output={"answer": "wrong"},
+                validator_result={"expected_state": {"answer": "right"}},
+                cost_metrics={"stages_run": 8, "projector_called": False},
+            ),
+            ValidationResult(False, 0.0, ["exact_match_failed"], {"answer": "right"}, 1.0),
+        )
+    raise ValueError(f"unknown governor fixture: {kind}")
+
+
+def _cmd_governor(args: argparse.Namespace) -> int:
+    try:
+        run_log, validation = _governor_fixture(args.fixture)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    governor = TrainingGovernor()
+    decision = governor.observe(run_log, validation)
+    if decision.action == "UPDATE":
+        diagnosis = BlameAssigner().diagnose(run_log, validation)
+        proposal = UpdatePlanner().plan(diagnosis, run_log)
+        decision = governor.decide_update(run_log, validation, diagnosis, proposal)
+    print(to_json(decision))
+    return 0
+
+
+def _cmd_quantization(args: argparse.Namespace) -> int:
+    if args.fixture != "retrieval":
+        print(f"unknown quantization fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    cue = binary_signature({"money": 1.0, "bank": 1.0, "kayaking": 0.0})
+    records = {
+        "t0001": binary_signature({"money": 1.0, "bank": 1.0}),
+        "t0002": binary_signature({"kayaking": 1.0, "river": 1.0}),
+        "t0003": binary_signature({"bank": 1.0}),
+    }
+    ranked = rank_by_popcount(cue, records, top_k=2)
+    measurement = measure_candidate_quality(
+        [
+            RetrievalQualitySample(
+                sample_id="bank-fixture",
+                exact_top_ids=["t0001", "t0003"],
+                candidate_top_ids=ranked,
+                exact_margin=0.2,
+                candidate_margin=0.2,
+            )
+        ],
+        k=2,
+    )
+    print(
+        json.dumps(
+            {
+                "ranked_ids": ranked,
+                "measurement": json.loads(to_json(measurement)),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+>>>>>>> Stashed changes
 def _cmd_inspect(args: argparse.Namespace) -> int:
     from lucid.audit.inspect import main as inspect_main
 
@@ -196,6 +406,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     context_parser.set_defaults(func=_cmd_context_op)
 
+<<<<<<< Updated upstream
+=======
+    dmf_parser = sub.add_parser("dmf", help="Run DMF on a built-in tracebank fixture")
+    dmf_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    dmf_parser.add_argument(
+        "--cue",
+        action="append",
+        default=[],
+        help="Override fixture cue with cue_key=weight; repeat for multiple cues",
+    )
+    dmf_parser.add_argument("--max-active", type=int, default=4)
+    dmf_parser.add_argument("--audit-dir", default="audit/dmf")
+    dmf_parser.add_argument("--learn", action="store_true", help="Apply one audited learning step")
+    dmf_parser.set_defaults(func=_cmd_dmf)
+
+    governor_parser = sub.add_parser("governor", help="Run training governor on a fixture")
+    governor_parser.add_argument(
+        "--fixture",
+        default="high-margin",
+        choices=["high-margin", "failure"],
+    )
+    governor_parser.set_defaults(func=_cmd_governor)
+
+    quant_parser = sub.add_parser(
+        "quantization",
+        help="Run training quantization measurement fixture",
+    )
+    quant_parser.add_argument("--fixture", default="retrieval", choices=["retrieval"])
+    quant_parser.set_defaults(func=_cmd_quantization)
+
+>>>>>>> Stashed changes
     inspect_parser = sub.add_parser("inspect", help="Inspect audit output")
     inspect_parser.add_argument("args", nargs=argparse.REMAINDER)
     inspect_parser.set_defaults(func=_cmd_inspect)
