@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from lucid.ir.cue import CueCloud, TraceActivationRequest
+from lucid.ir.common import Modality
+from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
+from lucid.ir.perception import PerceptionInput
 from lucid.ir.training import Episode
 from lucid.training.generator.output import read_episodes
 from lucid.training.generator.recipes import bank_destination, grid_move
@@ -92,6 +94,30 @@ def cue_encoder_targets(episode: Episode) -> dict[str, Any]:
         "trace_targets": dmf_targets(episode),
         "ambiguity_policy": str(cue_cloud.ambiguity_policy),
     }
+
+
+def episode_to_cue_encoder_input(episode: Episode) -> CueEncoderInput:
+    """Build a cue-encoder input by running rule perception on the episode."""
+
+    from lucid.cognition.input.perception import PerceptionConfig, perceive
+
+    modality = (
+        episode.modality if isinstance(episode.modality, Modality) else Modality(str(episode.modality))
+    )
+    graph = perceive(
+        PerceptionInput(raw_payload=episode.raw_input, modality=modality),
+        config=PerceptionConfig(backend="rule", write_audit=False),
+    )
+    task_intent = (
+        episode.task_intent.value
+        if hasattr(episode.task_intent, "value")
+        else str(episode.task_intent)
+    )
+    return CueEncoderInput(
+        perceptual_evidence_graph=graph,
+        task_intent_hint=task_intent,
+        retrieval_budget=max(16, len(episode.gold.trace_activations) * 2),
+    )
 
 
 def binding_targets(episode: Episode) -> list[dict[str, Any]]:

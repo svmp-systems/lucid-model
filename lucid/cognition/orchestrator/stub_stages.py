@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.ir.basins import BasinInput, BasinOutput, CompetitionSummary
 from lucid.ir.binding import BindingInput, BindingOutput
 from lucid.ir.common import DecoderMode, LucidityDecision
@@ -47,8 +48,19 @@ def perception(inp: PerceptionInput, ctx: object) -> PerceptualEvidenceGraph:
     return run_perception(inp, context=ctx, config=cfg)
 
 
-def cue_encoder(inp: CueEncoderInput, _ctx: object) -> CueCloud:
-    return CueCloud(provenance=inp.provenance)
+def _extra_from_context(ctx: object) -> dict:
+    if isinstance(ctx, dict):
+        return ctx
+    extra = getattr(ctx, "extra", None)
+    return extra if isinstance(extra, dict) else {}
+
+
+def cue_encoder(inp: CueEncoderInput, ctx: object) -> CueCloud:
+    extra = _extra_from_context(ctx)
+    return encode_cues(
+        inp,
+        config=CueEncoderConfig(checkpoint=extra.get("checkpoint") or extra.get("cue_checkpoint")),
+    )
 
 
 def dmf(inp: DmfInput, _ctx: object) -> DmfOutput:

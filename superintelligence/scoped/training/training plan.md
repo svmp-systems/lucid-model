@@ -106,10 +106,44 @@ Training objective:
 correct useful traces appear in top-kbad traces are ranked lowerambiguity is preserved when needed
 ```
 
-How to train:
+### Implementation (current)
+
+The cue encoder is a **layered evidence compiler** with checkpoint **promoted routes** — see `scoped/cue encoder & cue cloud.md`.
+
+Training is route promotion into `cue_encoder_map.json`, not neural backprop:
+
+| Mode | When | What it does |
+|------|------|--------------|
+| **calibrate** | default during Phase 1–3 module training | run encoder on episode → measure recall vs generator gold → patch **only missing** routes → `NO_UPDATE` when recall sufficient |
+| **seed** | corpus bootstrap, cold checkpoint | store all gold cue targets + routes from each episode |
+
+Commands:
 
 ```
-1. Run text/input through perception.2. Cue encoder proposes trace activations.3. Downstream system tries to reconstruct, answer, or act.4. If a trace path was used in a successful lucidity-approved output, reinforce it.5. If it caused wrong collapse, demote it.
+lucid train cue_encoder --mode calibrate --episodes data/phase1/all.jsonl --checkpoint checkpoints/local
+lucid train cue_encoder --mode seed --fixture bank --checkpoint checkpoints/local
+```
+
+Integration with orchestrator: failures blamed on `cue_encoder_or_DMF` produce `CueEncoderPatch` entries using the same route store; governor shadow-tests before promote.
+
+### Phase map for cue encoder
+
+| Build phase | Corpus scale | Cue encoder focus |
+|-------------|--------------|-------------------|
+| **Phase 1** | ~420 generator episodes | calibrate on bank/grid/two-event templates; seed checkpoint; prove recall on gold |
+| **Phase 2** | ~7k (+ chat pack) | calibrate on chat templates (clarify, follow-up, carryover); relation_index for discourse markers |
+| **Phase 3** | ~150k | calibrate on ARC failure mining; widen path tuned via scaling observatory |
+| **Phase 4** | 1.5M+ | route index compaction / quantization (binary feature patterns); hot/warm route tiers |
+
+How to train (runtime loop, all phases):
+
+```
+1. Run text/input through perception.
+2. Cue encoder compiles evidence + promoted routes → cue cloud.
+3. Downstream system tries to reconstruct, answer, or act.
+4. If recall vs gold is low (calibrate) or validator fails (orchestrator), promote smallest missing route.
+5. If high-margin success, governor skips update.
+6. If wrong collapse, demote or reject route on shadow failure.
 ```
 
 This is retrieval-style training, not full reasoning training.

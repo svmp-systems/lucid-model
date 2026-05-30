@@ -45,7 +45,7 @@ def _empty_store(name: str) -> Any:
     if name == "perception_examples":
         return {"examples": []}
     if name == "cue_encoder_map":
-        return {"cue_targets": []}
+        return {"cue_targets": [], "feature_index": {}, "relation_index": {}}
     if name == "projector_examples":
         return {"examples": []}
     return {}
@@ -162,6 +162,7 @@ def checkpoint_summary(state: CheckpointState) -> dict[str, Any]:
             "decoder_targets": len(state.ensure_store("decoder_adapter").get("render_targets", [])),
             "perception_examples": len(state.ensure_store("perception_examples").get("examples", [])),
             "cue_targets": len(state.ensure_store("cue_encoder_map").get("cue_targets", [])),
+            "cue_feature_keys": len(state.ensure_store("cue_encoder_map").get("feature_index", {})),
             "projector_examples": len(state.ensure_store("projector_examples").get("examples", [])),
         },
         "training_steps": int(state.manifest.get("training_steps", 0)),

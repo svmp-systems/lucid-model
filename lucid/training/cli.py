@@ -28,6 +28,8 @@ from lucid.training.orchestrator.orchestrator import (
     ValidationResult,
 )
 from lucid.training.trainers import get_trainer, trainer_names
+from dataclasses import replace
+
 from lucid.training.trainers.base import TrainingResult, utc_now_iso
 
 
@@ -181,7 +183,10 @@ def _run_module_training(args: argparse.Namespace) -> int:
     working_state = copy.deepcopy(state) if args.dry_run else state
     for step_index, episode in enumerate(episodes, start=1):
         step_dir = run_dir / f"step_{step_index:06d}_{_safe_part(episode.episode_id)}"
-        result = trainer.train(episode, working_state, step_dir)
+        step_episode = episode
+        if args.target == "cue_encoder" and getattr(args, "mode", None):
+            step_episode = replace(episode, meta={**episode.meta, "train_mode": args.mode})
+        result = trainer.train(step_episode, working_state, step_dir)
         results.append(result)
 
     if not args.dry_run:
@@ -474,6 +479,13 @@ def build_parser() -> argparse.ArgumentParser:
     for name in trainer_names():
         p = sub.add_parser(name, help=f"Train {name}")
         _add_common_args(p)
+        if name == "cue_encoder":
+            p.add_argument(
+                "--mode",
+                default="calibrate",
+                choices=["seed", "calibrate"],
+                help="seed stores all gold routes; calibrate patches only missing cues",
+            )
         p.set_defaults(func=_run_module_training)
 
     global_p = sub.add_parser("global", help="Run governor-directed global training")
