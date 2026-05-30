@@ -8,12 +8,14 @@ import sys
 from json import JSONDecodeError
 from pathlib import Path
 
+from lucid.audit.cue import write_cue_encoder_audit
+from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.ir.binding import CandidateFrame
-from lucid.ir.common import ComputePolicy, Modality, MaturityState
-from lucid.ir.cue import CueCloud, TraceActivationRequest
+from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState
+from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
@@ -88,10 +90,50 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.perception:
         perception_cfg.backend = args.perception
     runner = OrchestratorRunner(
-        config=OrchestratorConfig(audit_base_dir=args.audit_dir, perception=perception_cfg)
+        config=OrchestratorConfig(
+            audit_base_dir=args.audit_dir,
+            perception=perception_cfg,
+            checkpoint=args.checkpoint,
+        )
     )
     run = runner.run_episode(episode)
     print(run.context.audit_dir or "(audit written)")
+    return 0
+
+
+def _cue_fixture_text(name: str) -> str:
+    if name == "bank":
+        return "I found money while kayaking and placed it in the bank."
+    raise ValueError(f"unknown cue-encoder fixture: {name}")
+
+
+def _cmd_cue_encoder(args: argparse.Namespace) -> int:
+    try:
+        raw = args.text or _cue_fixture_text(args.fixture)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    perception_cfg = PerceptionConfig.from_env()
+    perception_cfg.backend = args.backend
+    graph = perceive(
+        PerceptionInput(raw_payload=raw, modality=Modality(args.modality)),
+        config=perception_cfg,
+    )
+    cue_input = CueEncoderInput(
+        perceptual_evidence_graph=graph,
+        task_intent_hint=args.task_intent,
+        retrieval_budget=args.retrieval_budget,
+        ambiguity_policy_in=AmbiguityPolicy(args.ambiguity_policy),
+    )
+    cloud = encode_cues(cue_input, config=CueEncoderConfig(checkpoint=args.checkpoint))
+    write_cue_encoder_audit(
+        audit_base_dir=args.audit_dir,
+        cue_input=cue_input,
+        cue_cloud=cloud,
+        details={"checkpoint": args.checkpoint, "fixture": args.fixture, "text": raw},
+    )
+    print(to_json(cloud))
     return 0
 
 
@@ -403,7 +445,24 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("episode", help="Path to Episode JSON or JSONL")
     run_parser.add_argument("--audit-dir", default="audit", help="Audit base directory")
     run_parser.add_argument("--perception", default="", choices=["", "rule", "llm"])
+    run_parser.add_argument("--checkpoint", default="", help="Checkpoint for runtime stores")
     run_parser.set_defaults(func=_cmd_run)
+
+    cue_parser = sub.add_parser("cue-encoder", help="Run cue encoder on text or a fixture")
+    cue_parser.add_argument("text", nargs="?", help="Raw text; fixture is used when omitted")
+    cue_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    cue_parser.add_argument("--checkpoint", default="", help="Checkpoint with cue_encoder_map.json")
+    cue_parser.add_argument("--backend", default="rule", choices=["rule", "llm"])
+    cue_parser.add_argument("--modality", default="text", choices=["text"])
+    cue_parser.add_argument("--task-intent", default="answer")
+    cue_parser.add_argument("--retrieval-budget", type=int, default=128)
+    cue_parser.add_argument(
+        "--ambiguity-policy",
+        default=AmbiguityPolicy.PRESERVE_PLURAL.value,
+        choices=[policy.value for policy in AmbiguityPolicy],
+    )
+    cue_parser.add_argument("--audit-dir", default="audit/cue_encoder")
+    cue_parser.set_defaults(func=_cmd_cue_encoder)
 
     context_parser = sub.add_parser("context-op", help="Run context-op on a built-in fixture")
     context_parser.add_argument("--fixture", default="bank", choices=["bank"])
