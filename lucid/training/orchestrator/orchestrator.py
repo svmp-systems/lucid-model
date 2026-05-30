@@ -295,11 +295,15 @@ class TrainingGovernor:
     """Cost-control policy that turns run outcomes into auditable update choices."""
 
     PATCH_TO_REGION = {
+        "PerceptionPatch": ("perception", "store_evidence_targets"),
+        "CueEncoderPatch": ("cue_encoder", "store_high_recall_cue_targets"),
         "TracePatch": ("dmf", "strengthen_or_seed_trace"),
         "InterferencePatch": ("interference", "adjust_support_or_conflict"),
         "BindingPatch": ("binding", "adjust_affordance"),
         "ContextPatch": ("context_op", "adjust_scope_gate"),
+        "BasinPatch": ("basins", "adjust_basin_links"),
         "LucidityPatch": ("lucidity", "adjust_commit_policy"),
+        "ProjectorPatch": ("projector", "store_projection_example"),
         "DecoderPatch": ("decoder", "add_decoder_correction_pair"),
     }
 
@@ -872,14 +876,25 @@ class UpdatePlanner:
 
     MODULE_TO_LEVEL = {
         "perception": 9,
+        "cue_encoder": 2,
+        "dmf": 2,
         "cue_encoder_or_DMF": 2,
         "binding": 4,
         "context_op": 5,
         "interference_or_basin": 3,
+        "basins": 6,
         "lucidity_too_strict": 8,
         "lucidity_too_loose": 8,
+        "projector": 8,
         "decoder": 9,
         "unknown": 0,
+    }
+    MODULE_TO_PATCH = {
+        "perception": "PerceptionPatch",
+        "cue_encoder": "CueEncoderPatch",
+        "dmf": "TracePatch",
+        "basins": "BasinPatch",
+        "projector": "ProjectorPatch",
     }
     LEVEL_TO_PATCH = {
         0: "NoPatch",
@@ -887,6 +902,7 @@ class UpdatePlanner:
         3: "InterferencePatch",
         4: "BindingPatch",
         5: "ContextPatch",
+        6: "BasinPatch",
         8: "LucidityPatch",
         9: "DecoderPatch",
     }
@@ -896,7 +912,10 @@ class UpdatePlanner:
             self.MODULE_TO_LEVEL.get(diagnosis.primary_module, 0),
             diagnosis.recommended_update_level or 10,
         )
-        patch_type = self.LEVEL_TO_PATCH.get(level, "NoPatch")
+        patch_type = self.MODULE_TO_PATCH.get(
+            diagnosis.primary_module,
+            self.LEVEL_TO_PATCH.get(level, "NoPatch"),
+        )
         targets = self._targets_for(run_log)
         if level == 0:
             targets = [run_log.episode_id]
