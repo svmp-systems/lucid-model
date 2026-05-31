@@ -13,7 +13,7 @@ from uuid import uuid4
 from lucid.audit.logger import resolve_run_dir
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.ir.basins import BasinInput, BasinOutput, CompetitionSummary
-from lucid.ir.binding import BindingInput, BindingOutput
+from lucid.ir.binding import BindingInput, BindingOutput, CandidateFrame
 from lucid.ir.common import DecoderMode, LucidityDecision
 from lucid.ir.context_op import ContextOpInput, ContextOpOutput
 from lucid.ir.cue import CueCloud, CueEncoderInput
@@ -24,6 +24,7 @@ from lucid.ir.lucidity import CommittedState, DecoderPolicy, LucidityInput, Luci
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
+from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.ir.pipeline import RunContext
 from lucid.memory.dmf import DynamicMemoryField, load_dynamic_memory_field
@@ -111,8 +112,31 @@ def dmf(inp: DmfInput, ctx: object) -> DmfOutput:
     return out
 
 
-def binding(inp: BindingInput, _ctx: object) -> BindingOutput:
-    return BindingOutput()
+def binding(inp: BindingInput, ctx: object) -> BindingOutput:
+    extra = _extra_from_context(ctx)
+    prior = list(inp.prior_candidate_frames)
+    if not prior:
+        carried = extra.get("prior_candidate_frames")
+        if isinstance(carried, list):
+            prior = [frame for frame in carried if isinstance(frame, CandidateFrame)]
+
+    feedback = extra.get("lucidity_feedback")
+    widen = (
+        isinstance(feedback, list)
+        and any(str(item).strip().upper() == "RECHECK_BINDING" for item in feedback)
+    )
+
+    run_input = inp
+    if prior and not inp.prior_candidate_frames:
+        run_input = replace(inp, prior_candidate_frames=prior)
+
+    return run_binding(
+        run_input,
+        config=BindingConfig(
+            checkpoint=extra.get("checkpoint") or extra.get("binding_checkpoint"),
+            widen_on_recheck=widen,
+        ),
+    )
 
 
 def context_op(inp: ContextOpInput, _ctx: object) -> ContextOpOutput:
