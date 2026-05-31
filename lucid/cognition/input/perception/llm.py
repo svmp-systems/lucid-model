@@ -6,29 +6,120 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from lucid.ir.common import Modality
+from lucid.audit.logger import AuditLogger, content_hash
+from lucid.ir.common import Modality, Provenance
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
+from lucid.ir.pipeline import RunContext
+from lucid.ir.serde import to_dict
 
-from lucid.cognition.input.perception.audit import (
-    perception_audit_path,
-    perception_run_id,
-    payload_hash,
-    utc_now,
-    write_perception_audit,
-)
 from lucid.cognition.input.perception.config import PerceptionConfig
-from lucid.cognition.input.perception.parse import graph_from_dict
 from lucid.cognition.input.perception.schema import (
     build_messages,
     empty_graph_retry_message,
+    graph_from_dict,
     graph_has_text_evidence,
     json_object_response_format,
     structured_response_format,
 )
 
+_AUDIT_VERSION = "perception-llm-detail-v1"
+_STAGE_NAME = "perception_llm"
+_ADAPTER_VERSION = "llm-perception-v1"
 _MAX_ATTEMPTS = 3
+
+
+def payload_hash(payload: Any) -> str:
+    return content_hash(payload)
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def perception_run_id(inp: PerceptionInput) -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"perception-{stamp}-{payload_hash(inp.raw_payload)[:12]}"
+
+
+def perception_audit_path(base_dir: str | Path, run_id: str) -> Path:
+    return Path(base_dir) / f"{run_id}.json"
+
+
+def _input_summary(inp: PerceptionInput) -> dict[str, Any]:
+    modality = inp.modality.value if hasattr(inp.modality, "value") else str(inp.modality)
+    payload = inp.raw_payload
+    if isinstance(payload, str):
+        preview = payload[:500]
+        payload_type = "str"
+        payload_size = len(payload)
+    else:
+        preview = repr(payload)[:500]
+        payload_type = type(payload).__name__
+        payload_size = len(json.dumps(payload, default=str))
+    return {
+        "modality": modality,
+        "payload_type": payload_type,
+        "payload_size": payload_size,
+        "payload_preview": preview,
+        "input_hash": payload_hash(payload),
+        "task_intent_hint": getattr(inp.task_intent_hint, "value", inp.task_intent_hint),
+        "prior_context_keys": sorted(inp.prior_context.keys()),
+        "provenance_seed": inp.provenance_seed,
+    }
+
+
+def _graph_summary(graph: PerceptualEvidenceGraph | None) -> dict[str, Any]:
+    if graph is None:
+        return {}
+    return {
+        "candidate_units": len(graph.candidate_units),
+        "candidate_regions": len(graph.candidate_regions),
+        "candidate_containers": len(graph.candidate_containers),
+        "candidate_markers": len(graph.candidate_markers),
+        "arrangement_hints": len(graph.arrangement_hints),
+        "change_hints": len(graph.change_hints),
+        "grouping_hints": len(graph.grouping_hints),
+        "reference_hints": len(graph.reference_hints),
+        "uncertainty_flags": len(graph.uncertainty_flags),
+    }
+
+
+def _config_summary(config: PerceptionConfig) -> dict[str, Any]:
+    return {
+        "backend": config.backend,
+        "model": config.model,
+        "base_url": config.base_url,
+        "timeout_s": config.timeout_s,
+        "use_json_schema": config.use_json_schema,
+        "min_text_units": config.min_text_units,
+        "api_key_present": bool(config.api_key),
+    }
+
+
+def _human_summary(
+    inp: PerceptionInput,
+    config: PerceptionConfig,
+    attempts: list[dict[str, Any]],
+    graph: PerceptualEvidenceGraph | None,
+    error: str | None,
+) -> str:
+    counts = _graph_summary(graph)
+    if error:
+        return (
+            f"LLM perception failed after {len(attempts)} attempt(s) "
+            f"on {inp.modality}: {error}"
+        )
+    return (
+        f"LLM perception using {config.model} produced "
+        f"{counts.get('candidate_units', 0)} unit(s), "
+        f"{counts.get('candidate_markers', 0)} marker(s), "
+        f"{counts.get('uncertainty_flags', 0)} uncertainty flag(s) "
+        f"after {len(attempts)} attempt(s)."
+    )
 
 
 def perceive_llm(
@@ -209,15 +300,31 @@ def _write_audit(
 ) -> None:
     if not cfg.write_audit:
         return
-    write_perception_audit(
-        base_dir=cfg.audit_dir,
-        run_id=run_id,
-        inp=inp,
-        config=cfg,
-        messages=messages,
-        attempts=attempts,
-        graph=graph,
-        error=error,
+    base = Path(cfg.audit_dir)
+    path = perception_audit_path(base, run_id)
+    success = graph is not None and error is None
+    provenance = graph.provenance if graph is not None else Provenance(modality=inp.modality)
+
+    AuditLogger(base_dir=base, adapter_version=_ADAPTER_VERSION).write_stage(
+        run_dir=base,
+        context=RunContext(run_id=run_id),
+        stage_name=_STAGE_NAME,
+        stage_input=_input_summary(inp),
+        stage_output={
+            "audit_version": _AUDIT_VERSION,
+            "success": success,
+            "human_summary": _human_summary(inp, cfg, attempts, graph, error),
+            "config": _config_summary(cfg),
+            "messages": messages,
+            "attempts": attempts,
+            "graph_summary": _graph_summary(graph),
+            "graph": to_dict(graph) if graph is not None else None,
+            "error": error,
+        },
+        file_name=path.name,
+        success=success,
+        error_message=error or "",
+        provenance=provenance,
     )
 
 

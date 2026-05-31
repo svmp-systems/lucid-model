@@ -315,7 +315,7 @@ def test_compact_output_omits_empty_lists_and_defaults() -> None:
         UncertaintyFlag,
     )
     from lucid.ir.common import UncertaintySeverity
-    from lucid.cognition.input.perception.compact import compact_graph
+    from lucid.cognition.input.perception import compact_graph
 
     graph = PerceptualEvidenceGraph(
         candidate_units=[CandidateUnit(unit_id="u_bank", surface="bank", kind_hint="span")],
@@ -337,6 +337,16 @@ def test_compact_output_omits_empty_lists_and_defaults() -> None:
         "kind_hint": "span",
     }
     assert "confidence" not in compact["candidate_units"][0]
+
+
+def test_global_cli_runs_perception(capsys) -> None:
+    from lucid.cli import main
+
+    exit_code = main(["perceive", "go to the bank", "--backend", "rule", "--compact"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "candidate_units" in out
+    assert "bank" in out
 
 
 def test_llm_requires_api_key() -> None:

@@ -165,6 +165,7 @@ class OrchestratorConfig:
     max_iterations: int = 2
     widen_retrieval_budget_multiplier: float = 1.5
     perception: PerceptionConfig | None = None
+    checkpoint: str = ""
 
 
 class OrchestratorRunner:
@@ -220,6 +221,8 @@ class OrchestratorRunner:
                 audit_dir=str(self.audit.run_directory(ctx) / "perception"),
             )
         ctx.extra["perception_config"] = perception_cfg
+        if self.config.checkpoint:
+            ctx.extra["checkpoint"] = self.config.checkpoint
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()
@@ -235,6 +238,12 @@ class OrchestratorRunner:
 
         run.cost_metrics.wall_time_ms = max(0.0, _now_ms() - t0)
         self.audit.write_pipeline_run(run)
+        try:
+            from lucid.audit.scaling import record_pipeline_run
+
+            record_pipeline_run(run)
+        except Exception:  # noqa: BLE001 — scaling must not break pipeline runs
+            pass
         return run
 
     def _execute_episode(self, run: PipelineRun, episode: Episode) -> None:
@@ -251,12 +260,18 @@ class OrchestratorRunner:
         retrieval_budget = 128
         ambiguity_policy = AmbiguityPolicy.PRESERVE_PLURAL
         lucidity_feedback: list[str] = []
+        prev_dmf_coverage: float | None = None
 
         for iteration in range(max(1, int(self.config.max_iterations))):
             run.context.iteration_count = iteration
 
+            upstream_state: dict[str, Any] = {}
+            if prev_dmf_coverage is not None:
+                upstream_state["dmf_coverage_score"] = prev_dmf_coverage
+
             run.cue_encoder_input = CueEncoderInput(
                 perceptual_evidence_graph=run.evidence_graph,
+                upstream_state=upstream_state,
                 task_intent_hint=str(episode.task_intent),
                 retrieval_budget=retrieval_budget,
                 ambiguity_policy_in=ambiguity_policy,
@@ -269,6 +284,7 @@ class OrchestratorRunner:
 
             run.dmf_input = DmfInput(cue_cloud=run.cue_cloud)
             run.dmf_output = self._run_stage(StageName.DMF.value, run, run.dmf_input)
+            prev_dmf_coverage = float(run.dmf_output.coverage_score)
 
             run.binding_input = BindingInput(
                 dmf_output=run.dmf_output,

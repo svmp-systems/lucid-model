@@ -11,13 +11,13 @@ from pathlib import Path
 from lucid.ir.serde import to_json
 from lucid.training.generator.engine import (
     DEFAULT_BANDS,
-    check_batch,
     get_recipe,
     list_recipes,
     pick_band,
     parse_band_weights,
     rng_for_seed,
     sample_knob,
+    check_batch,
 )
 from lucid.training.generator.output import build_phase1_pack, read_episodes, write_episodes
 

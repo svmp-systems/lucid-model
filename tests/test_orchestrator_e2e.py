@@ -130,11 +130,15 @@ def test_end_to_end_success_path_no_patch(tmp_path: Path):
     status = orch.get_status()
     assert status["patch_history_count"] == 0
     assert status["metrics"]["success_rate"] >= 0.9
+    assert status["governor"]["action_counts"]["NO_UPDATE"] == 3
     dirs = _audit_dirs(tmp_path / "audit")
     assert len(dirs) == 3
     assert (dirs[0] / "manifest.json").exists()
     assert (dirs[0] / "README.txt").exists()
     assert (dirs[0] / "run_log.json").exists()
+    governor = json.loads((dirs[0] / "governor_decision.json").read_text(encoding="utf-8"))
+    assert governor["action"] == "NO_UPDATE"
+    assert governor["consolidation_directives"][0]["action"] == "CANDIDATE_FOR_QUANTIZATION"
 
 
 def test_end_to_end_failure_goes_to_replay(tmp_path: Path):
@@ -172,6 +176,12 @@ def test_end_to_end_failure_goes_to_replay(tmp_path: Path):
     dirs = _audit_dirs(tmp_path / "audit")
     assert len(dirs) == 1
     assert (dirs[0] / "patch_result.json").exists()
+    patch = json.loads((dirs[0] / "patch.json").read_text(encoding="utf-8"))
+    assert patch["delta"]["active_only"] is True
+    assert patch["delta"]["update_regions"][0]["subsystem"] == "lucidity"
+    governor = json.loads((dirs[0] / "governor_decision.json").read_text(encoding="utf-8"))
+    assert governor["action"] == "UPDATE"
+    assert governor["max_modules_updated"] == 1
 
 
 def test_projector_runs_only_in_test_consequence_band(tmp_path: Path):
@@ -206,6 +216,7 @@ def test_projector_runs_only_in_test_consequence_band(tmp_path: Path):
     orch.run_one_step()
     assert projector.calls >= 1
     assert _audit_dirs(tmp_path / "audit")
+    assert orch.get_status()["metrics"]["defer_rate"] == 1.0
 
 
 def test_exception_path_writes_audit(tmp_path: Path):
@@ -281,3 +292,69 @@ def test_replay_clear_requires_patch_shadow_and_three_successes():
     store.on_episode_shadow_passed("ep-replay")
     assert store.try_clear("ep-replay") is True
     assert not store.contains("ep-replay")
+
+
+def test_decoder_render_failure_builds_decoder_only_patch():
+    orchestrator_mod = _load_orchestrator()
+    run_log = orchestrator_mod.RunLog(
+        episode_id="ep-decoder",
+        raw_input="x",
+        evidence_graph={"entities": ["x"]},
+        cue_cloud={"cue": "x"},
+        active_traces=["trace-1"],
+        trace_clusters=[],
+        candidate_bindings=[{"binding_id": "b"}],
+        context_frames=[{"frame_id": "ctx"}],
+        scoped_trace_assignments={},
+        interference_edges=[],
+        active_basins=[{"basin_id": "basin-1"}],
+        basin_assemblies={"answer": "wrong"},
+        lucidity_features={},
+        lucidity_decision="commit",
+        lucidity_margin=0.9,
+        projection_result=None,
+        decoder_output={"answer": "wrong"},
+        validator_result={"expected_state": {"answer": "right"}},
+        cost_metrics={"stages_run": 8},
+    )
+    validation = orchestrator_mod.ValidationResult(
+        success=False,
+        score=0.0,
+        failure_signals=["decoder_render_mismatch"],
+        expected_state={"answer": "right"},
+        confidence=1.0,
+    )
+    diagnosis = orchestrator_mod.BlameAssigner().diagnose(run_log, validation)
+    proposal = orchestrator_mod.UpdatePlanner().plan(diagnosis, run_log)
+    governor = orchestrator_mod.TrainingGovernor()
+    decision = governor.decide_update(run_log, validation, diagnosis, proposal)
+    patch = orchestrator_mod.PatchBuilder().build(proposal, run_log, decision)
+
+    assert patch.patch_type == "DecoderPatch"
+    assert patch.delta["decoder_only"] is True
+    assert patch.delta["update_regions"][0]["subsystem"] == "decoder"
+    assert patch.delta["correction_pair"]["update_scope"] == "decoder_only"
+
+
+def test_retention_suite_caps_shadow_bundle_by_phase():
+    orchestrator_mod = _load_orchestrator()
+    episodes = [
+        orchestrator_mod.TrainingEpisode(
+            episode_id=f"ep-{idx}",
+            raw_input="x",
+            modality="text",
+            task_intent="qa",
+            context={},
+            constraints={},
+            expected_output={"answer": "ok"},
+            validator_type="exact_match",
+            metadata={"task_family": f"family-{idx % 20}"},
+        )
+        for idx in range(120)
+    ]
+    suite = orchestrator_mod.RetentionSuiteManager(episodes, phase=4)
+    bundle = suite.select_shadow_bundle("ep-0")
+
+    assert len(bundle) <= 80
+    assert suite.snapshot()["max_shadow_episodes"] == 80
+    assert len(suite.snapshot()["family_coverage"]) == 20

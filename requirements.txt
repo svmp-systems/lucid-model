@@ -1,0 +1,10 @@
+# Runtime: no third-party packages (stdlib only; LLM perception uses urllib).
+# Editable install registers lucid plus compatibility generator/audit tools.
+-e .
+
+# Dev / test (matches pyproject.toml [project.optional-dependencies].dev)
+pytest>=8.0
+ruff>=0.4
+
+# Build (matches pyproject.toml [build-system])
+hatchling

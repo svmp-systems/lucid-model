@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from lucid.ir.perception import PerceptionInput
-from lucid.ir.serde import to_dict
+from lucid.ir.common import Modality
+from lucid.ir.perception import PerceptualEvidenceGraph
+from lucid.ir.serde import from_dict, to_dict
 
 # Model output only (provenance is attached after parse).
 _DEFINITIONS: dict[str, Any] = {
@@ -129,6 +133,8 @@ _LIST_KEYS = (
     "reference_hints",
     "uncertainty_flags",
 )
+
+_FORBIDDEN = ("bank_sense", "trace_id", "task_type", "interpretation", "final_answer")
 
 PERCEPTUAL_EVIDENCE_GRAPH_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -308,6 +314,74 @@ def normalize_graph_dict(data: dict[str, Any]) -> dict[str, Any]:
                 repaired.append(fixed)
         out[key] = repaired
     return out
+
+
+def graph_from_dict(data: dict[str, Any], *, modality: Modality) -> PerceptualEvidenceGraph:
+    normalized = normalize_graph_dict(data)
+    lower = json.dumps(normalized).lower()
+    for token in _FORBIDDEN:
+        if token in lower:
+            raise ValueError(f"forbidden: {token}")
+    for unit in normalized.get("candidate_units") or []:
+        uid = unit.get("unit_id", "") if isinstance(unit, dict) else ""
+        if re.match(r"^t[_-]", str(uid), re.I):
+            raise ValueError("unit_id must not look like a trace id")
+    graph: PerceptualEvidenceGraph = from_dict(normalized, PerceptualEvidenceGraph)
+    if graph.provenance.modality is None:
+        graph.provenance.modality = modality
+    graph.provenance.extra["backend"] = "llm"
+    return graph
+
+
+def _is_empty_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if value == "" or value == 0 or value == 0.0:
+        return True
+    return isinstance(value, (list, dict)) and len(value) == 0
+
+
+def _compact_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: val for key, val in item.items() if not _is_empty_value(val)}
+
+
+def compact_graph_dict(data: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in _LIST_KEYS:
+        raw_items = data.get(key) or []
+        if not raw_items:
+            continue
+        items: list[Any] = []
+        for item in raw_items:
+            if isinstance(item, dict):
+                compacted = _compact_item(item)
+                if compacted:
+                    items.append(compacted)
+            elif not _is_empty_value(item):
+                items.append(item)
+        if items:
+            out[key] = items
+
+    provenance = data.get("provenance")
+    if isinstance(provenance, dict):
+        compact_prov = _compact_item(provenance)
+        extra = provenance.get("extra")
+        if isinstance(extra, dict):
+            compact_extra = _compact_item(extra)
+            if compact_extra:
+                compact_prov["extra"] = compact_extra
+        if compact_prov:
+            out["provenance"] = compact_prov
+
+    return out
+
+
+def compact_graph(graph: PerceptualEvidenceGraph) -> dict[str, Any]:
+    return compact_graph_dict(to_dict(graph))
+
+
+def to_compact_json(graph: PerceptualEvidenceGraph, *, indent: int = 2) -> str:
+    return json.dumps(compact_graph(graph), indent=indent, ensure_ascii=False)
 
 
 def build_system_prompt() -> str:

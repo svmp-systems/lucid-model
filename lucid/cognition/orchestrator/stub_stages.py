@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.ir.basins import BasinInput, BasinOutput, CompetitionSummary
 from lucid.ir.binding import BindingInput, BindingOutput
 from lucid.ir.common import CommitShape, DecoderMode, LucidityDecision
@@ -27,6 +28,7 @@ from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
 from lucid.cognition.projector import run_projector
+from lucid.cognition.reasoning.context_op import run_context_op
 
 
 def _lucidity_target_to_decision(target: str) -> LucidityDecision:
@@ -53,8 +55,19 @@ def perception(inp: PerceptionInput, ctx: object) -> PerceptualEvidenceGraph:
     return run_perception(inp, context=ctx, config=cfg)
 
 
-def cue_encoder(inp: CueEncoderInput, _ctx: object) -> CueCloud:
-    return CueCloud(provenance=inp.provenance)
+def _extra_from_context(ctx: object) -> dict:
+    if isinstance(ctx, dict):
+        return ctx
+    extra = getattr(ctx, "extra", None)
+    return extra if isinstance(extra, dict) else {}
+
+
+def cue_encoder(inp: CueEncoderInput, ctx: object) -> CueCloud:
+    extra = _extra_from_context(ctx)
+    return encode_cues(
+        inp,
+        config=CueEncoderConfig(checkpoint=extra.get("checkpoint") or extra.get("cue_checkpoint")),
+    )
 
 
 def dmf(inp: DmfInput, _ctx: object) -> DmfOutput:
@@ -66,7 +79,7 @@ def binding(inp: BindingInput, _ctx: object) -> BindingOutput:
 
 
 def context_op(inp: ContextOpInput, _ctx: object) -> ContextOpOutput:
-    return ContextOpOutput()
+    return run_context_op(inp)
 
 
 def interference(inp: InterferenceInput, _ctx: object) -> InterferenceOutput:

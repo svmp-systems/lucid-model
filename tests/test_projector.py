@@ -9,6 +9,7 @@ from lucid.cognition.orchestrator.runner import OrchestratorConfig, Orchestrator
 from lucid.cognition.orchestrator.stages import FunctionStage
 from lucid.cognition.orchestrator.stub_stages import build_default_stage_fns
 from lucid.cognition.projector import run_projector
+from lucid.cli import main as lucid_cli
 from lucid.ir.common import DecoderMode, LucidityDecision, Modality, TaskIntent
 from lucid.ir.lucidity import DecoderPolicy, LucidityInput, LucidityOutput, SearchDirectives
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
@@ -103,6 +104,64 @@ def test_projector_scores_basin_parameterized_program() -> None:
     assert best.program_ref == "p_copy_from_basin"
     assert best.target_basin_ids == ["b_copy"]
     assert best.implied_artifact["test_outputs"] == [[[1, 0], [0, 0]]]
+
+
+def test_projector_honors_directive_max_rollouts_over_constraints() -> None:
+    inp = ProjectorInput(
+        projection_request=SearchDirectives(projector_targets=["asy_grid"], max_rollouts=1),
+        constraints=ProjectionConstraints(
+            train_pairs=[
+                ProjectionGridPair(
+                    pair_id="train_0",
+                    input_grid=[[0, 1, 0], [0, 0, 0]],
+                    output_grid=[[0, 0, 1], [0, 0, 0]],
+                )
+            ],
+            test_inputs=[[[2, 0, 0], [0, 0, 0]]],
+            max_rollouts=4,
+        ),
+        task_intent=TaskIntent.SOLVE_GRID.value,
+    )
+
+    out = run_projector(inp)
+
+    assert len(out.rollouts) == 1
+    assert any("rollouts_scored: 1" in note for note in out.audit_notes)
+
+
+def test_projector_unknown_requested_op_returns_auditable_search_result() -> None:
+    inp = ProjectorInput(
+        projection_request=SearchDirectives(
+            projector_targets=["b_plan"],
+            max_rollouts=1,
+            extra={
+                "programs": [
+                    {
+                        "program_id": "p_plan",
+                        "target_basin_ids": ["b_plan"],
+                        "ops": [{"op_type": "PlanStep"}],
+                    }
+                ]
+            },
+        ),
+        constraints=ProjectionConstraints(
+            train_pairs=[
+                ProjectionGridPair(
+                    pair_id="train_0",
+                    input_grid=[[0, 4], [0, 0]],
+                    output_grid=[[0, 4], [0, 0]],
+                )
+            ],
+        ),
+        task_intent=TaskIntent.ACT.value,
+    )
+
+    out = run_projector(inp)
+
+    assert out.recommendation_to_lucidity == "search_wider"
+    assert out.rollouts[0].failure_point == "train_0"
+    assert out.rollouts[0].implied_artifact["artifact_type"] == "error"
+    assert "unknown projection op: PlanStep" in out.rollouts[0].implied_artifact["error"]
 
 
 def test_projector_without_train_pairs_preserves_ambiguity() -> None:
@@ -255,3 +314,13 @@ def test_orchestrator_projection_stage_writes_auditable_program(tmp_path: Path) 
     assert rollout["program"]["ops"][0]["op_type"] == "Move"
     assert rollout["implied_artifact"]["test_outputs"] == [[[0, 0, 1], [0, 0, 0]]]
     assert run.cost_metrics.projector_rollout_count == 1
+
+
+def test_universal_cli_projector_smoke(capsys) -> None:
+    assert lucid_cli(["projector", "--fixture", "grid-move", "--max-rollouts", "1"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["recommendation_to_lucidity"] == "suggest_commit"
+    assert len(payload["rollouts"]) == 1
+    assert payload["rollouts"][0]["program"]["ops"][0]["op_type"] == "Move"

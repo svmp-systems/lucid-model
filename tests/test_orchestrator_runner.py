@@ -8,11 +8,11 @@ import pytest
 from lucid.ir.common import DecoderMode, LucidityDecision, Modality
 from lucid.ir.lucidity import DecoderPolicy, LucidityOutput, SearchDirectives
 from lucid.ir.training import Episode, GoldLabels
-from lucid.orchestrator.cli import main as run_cli
+from lucid.cli import main as lucid_cli
 from lucid.cognition.input.perception import PerceptionConfig
-from lucid.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
-from lucid.orchestrator.stages import FunctionStage
-from lucid.orchestrator.stub_stages import build_default_stage_fns
+from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
+from lucid.cognition.orchestrator.stages import FunctionStage
+from lucid.cognition.orchestrator.stub_stages import build_default_stage_fns
 
 
 def test_orchestrator_runs_and_writes_audit(tmp_path: Path) -> None:
@@ -136,12 +136,30 @@ def test_cli_accepts_pretty_json_with_bom(tmp_path: Path) -> None:
     episode_path = tmp_path / "episode.json"
     episode_path.write_text(json.dumps(payload, indent=2), encoding="utf-8-sig")
 
-    exit_code = run_cli(
-        [str(episode_path), "--audit-dir", str(tmp_path / "audit"), "--perception", "rule"]
+    exit_code = lucid_cli(
+        ["run", str(episode_path), "--audit-dir", str(tmp_path / "audit"), "--perception", "rule"]
     )
 
     assert exit_code == 0
     assert list((tmp_path / "audit" / "runs").iterdir())
+
+def test_cli_runs_perception_component(capsys) -> None:
+    exit_code = lucid_cli(["perceive", "go to the bank", "--backend", "rule", "--compact"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "candidate_units" in captured.out
+    assert "bank" in captured.out
+
+
+def test_cli_runs_context_op_component(capsys) -> None:
+    exit_code = lucid_cli(["context-op", "--fixture", "bank"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "context_frames" in captured.out
+    assert "interference_gates" in captured.out
+    assert "t_kayak" in captured.out
 
 
 def test_llm_perception_audit_is_linked_from_stage_audit(monkeypatch, tmp_path: Path) -> None:
@@ -189,4 +207,3 @@ def test_llm_perception_audit_is_linked_from_stage_audit(monkeypatch, tmp_path: 
     assert detail_audit["stage_name"] == "perception_llm"
     assert detail_audit["output"]["attempts"][0]["raw_response"]
     assert detail_audit["output"]["graph"]["candidate_units"][0]["surface"] == "bank"
-

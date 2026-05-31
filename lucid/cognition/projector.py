@@ -63,7 +63,7 @@ class UniversalProjector:
         if requested_programs and not constraints.train_pairs:
             rollouts = [
                 _generic_rollout(program, inp)
-                for program in requested_programs[: max(1, constraints.max_rollouts)]
+                for program in requested_programs[: _rollout_limit(inp)]
             ]
             return ProjectorOutput(
                 rollouts=rollouts,
@@ -91,7 +91,7 @@ class UniversalProjector:
             )
 
         rollouts: list[ProjectorRollout] = []
-        for program in candidates[: max(1, constraints.max_rollouts)]:
+        for program in candidates[: _rollout_limit(inp)]:
             rollouts.append(_score_program(program, constraints))
 
         best = max(rollouts, key=lambda rollout: rollout.fit_scores.aggregate_fit)
@@ -115,6 +115,17 @@ def _projection_targets(inp: ProjectorInput) -> list[str]:
     targets = list(inp.target_assembly_ids) + list(inp.target_basin_ids)
     targets.extend(inp.projection_request.projector_targets)
     return list(dict.fromkeys(targets))
+
+
+def _rollout_limit(inp: ProjectorInput) -> int:
+    for raw in (inp.projection_request.max_rollouts, inp.constraints.max_rollouts):
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if limit > 0:
+            return limit
+    return 1
 
 
 def _candidate_programs(
@@ -315,7 +326,10 @@ def _score_program(
     train_outputs: dict[str, Grid] = {}
 
     for pair in constraints.train_pairs:
-        predicted = _apply_program(pair.input_grid, program)
+        try:
+            predicted = _apply_program(pair.input_grid, program)
+        except ValueError as exc:
+            return _failed_rollout(program, str(exc), pair.pair_id)
         fit, unexplained = _fit_score(predicted, pair.output_grid)
         per_pair[pair.pair_id] = fit
         total_unexplained += unexplained
@@ -324,9 +338,12 @@ def _score_program(
             failure_point = pair.pair_id
 
     aggregate = sum(per_pair.values()) / len(per_pair)
-    test_outputs = [
-        _apply_program(test_input, program) for test_input in constraints.test_inputs
-    ]
+    try:
+        test_outputs = [
+            _apply_program(test_input, program) for test_input in constraints.test_inputs
+        ]
+    except ValueError as exc:
+        return _failed_rollout(program, str(exc), "test_inputs")
     return ProjectorRollout(
         rollout_id=f"rollout-{uuid4()}",
         assembly_id=program.assembly_id,
@@ -343,6 +360,32 @@ def _score_program(
             aggregate_fit=aggregate,
             unexplained_cells=total_unexplained,
             consistency_score=aggregate,
+        ),
+        program=program,
+        program_ref=program.program_id,
+        failure_point=failure_point,
+    )
+
+
+def _failed_rollout(
+    program: ProjectionProgram,
+    error_message: str,
+    failure_point: str,
+) -> ProjectorRollout:
+    return ProjectorRollout(
+        rollout_id=f"rollout-{uuid4()}",
+        assembly_id=program.assembly_id,
+        target_basin_ids=list(program.target_basin_ids),
+        implied_artifact={
+            "artifact_type": "error",
+            "program": to_dict(program),
+            "program_ops": [op.op_type for op in program.ops],
+            "error": error_message,
+        },
+        fit_scores=RolloutFitScores(
+            aggregate_fit=0.0,
+            unexplained_cells=0,
+            consistency_score=0.0,
         ),
         program=program,
         program_ref=program.program_id,
