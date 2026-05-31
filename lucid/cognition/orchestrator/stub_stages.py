@@ -6,8 +6,11 @@ audits even before real algorithmic stage implementations exist.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
+from lucid.audit.logger import resolve_run_dir
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.ir.basins import BasinInput, BasinOutput, CompetitionSummary
 from lucid.ir.binding import BindingInput, BindingOutput
@@ -22,6 +25,8 @@ from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.ir.pipeline import RunContext
+from lucid.memory.dmf import DynamicMemoryField, load_dynamic_memory_field
 
 
 def _lucidity_target_to_decision(target: str) -> LucidityDecision:
@@ -63,8 +68,47 @@ def cue_encoder(inp: CueEncoderInput, ctx: object) -> CueCloud:
     )
 
 
-def dmf(inp: DmfInput, _ctx: object) -> DmfOutput:
-    return DmfOutput()
+def _dmf_runtime(ctx: object) -> DynamicMemoryField:
+    extra = _extra_from_context(ctx)
+    runtime = extra.get("dmf_runtime")
+    if isinstance(runtime, DynamicMemoryField):
+        return runtime
+
+    audit_dir: Path | None = None
+    if isinstance(ctx, RunContext) and ctx.run_id:
+        base = str(extra.get("audit_base_dir") or "audit")
+        audit_dir = resolve_run_dir(base, ctx) / "dmf"
+
+    checkpoint = str(extra.get("checkpoint") or extra.get("dmf_checkpoint") or "").strip()
+    runtime = load_dynamic_memory_field(
+        checkpoint or None,
+        audit_base_dir=audit_dir,
+    )
+    extra["dmf_runtime"] = runtime
+    return runtime
+
+
+def dmf(inp: DmfInput, ctx: object) -> DmfOutput:
+    runtime = _dmf_runtime(ctx)
+    extra = _extra_from_context(ctx)
+
+    prior_ids = list(inp.prior_active_trace_ids)
+    if not prior_ids:
+        carryover = extra.get("prior_active_trace_ids")
+        if isinstance(carryover, list):
+            prior_ids = [str(item) for item in carryover if str(item)]
+
+    run_input = inp
+    if not inp.tracebank_snapshot_id:
+        run_input = replace(inp, tracebank_snapshot_id=runtime.snapshot_id())
+    if prior_ids and not inp.prior_active_trace_ids:
+        run_input = replace(run_input, prior_active_trace_ids=prior_ids)
+
+    out = runtime.run(run_input)
+    extra["prior_active_trace_ids"] = [
+        trace.trace_id for trace in out.active_traces if trace.trace_id
+    ]
+    return out
 
 
 def binding(inp: BindingInput, _ctx: object) -> BindingOutput:

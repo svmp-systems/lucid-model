@@ -114,6 +114,7 @@ class OrchestratorRunner:
         ctx.extra["perception_config"] = perception_cfg
         if self.config.checkpoint:
             ctx.extra["checkpoint"] = self.config.checkpoint
+        ctx.extra["audit_base_dir"] = self.config.audit_base_dir
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()
