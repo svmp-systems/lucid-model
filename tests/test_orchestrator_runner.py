@@ -143,7 +143,6 @@ def test_cli_accepts_pretty_json_with_bom(tmp_path: Path) -> None:
     assert exit_code == 0
     assert list((tmp_path / "audit" / "runs").iterdir())
 
-
 def test_cli_runs_perception_component(capsys) -> None:
     exit_code = lucid_cli(["perceive", "go to the bank", "--backend", "rule", "--compact"])
 
@@ -208,4 +207,3 @@ def test_llm_perception_audit_is_linked_from_stage_audit(monkeypatch, tmp_path: 
     assert detail_audit["stage_name"] == "perception_llm"
     assert detail_audit["output"]["attempts"][0]["raw_response"]
     assert detail_audit["output"]["graph"]["candidate_units"][0]["surface"] == "bank"
-

@@ -12,13 +12,16 @@ from lucid.audit.cue import write_cue_encoder_audit
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
+from lucid.cognition.projector import run_projector
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
+from lucid.ir.lucidity import SearchDirectives
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
+from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
 from lucid.ir.serde import from_json, to_json
 from lucid.ir.training import Episode
 from lucid.memory.dmf import DmfTraceRecord, DynamicMemoryField
@@ -203,6 +206,36 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
+    print(to_json(out))
+    return 0
+
+
+def _grid_move_projector_fixture(max_rollouts: int) -> ProjectorInput:
+    return ProjectorInput(
+        projection_request=SearchDirectives(
+            projector_targets=["asy_grid_candidate"],
+            max_rollouts=max_rollouts,
+        ),
+        constraints=ProjectionConstraints(
+            train_pairs=[
+                ProjectionGridPair(
+                    pair_id="train_0",
+                    input_grid=[[0, 1, 0], [0, 0, 0]],
+                    output_grid=[[0, 0, 1], [0, 0, 0]],
+                )
+            ],
+            test_inputs=[[[2, 0, 0], [0, 0, 0]]],
+            max_rollouts=max_rollouts,
+        ),
+        task_intent="solve_grid",
+    )
+
+
+def _cmd_projector(args: argparse.Namespace) -> int:
+    if args.fixture != "grid-move":
+        print(f"unknown projector fixture: {args.fixture}", file=sys.stderr)
+        return 2
+    out = run_projector(_grid_move_projector_fixture(args.max_rollouts))
     print(to_json(out))
     return 0
 
@@ -473,6 +506,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lucidity feedback token, e.g. SEARCH_WIDER",
     )
     context_parser.set_defaults(func=_cmd_context_op)
+
+    projector_parser = sub.add_parser("projector", help="Run projector on a built-in fixture")
+    projector_parser.add_argument("--fixture", default="grid-move", choices=["grid-move"])
+    projector_parser.add_argument("--max-rollouts", type=int, default=1)
+    projector_parser.set_defaults(func=_cmd_projector)
 
     dmf_parser = sub.add_parser("dmf", help="Run DMF on a built-in tracebank fixture")
     dmf_parser.add_argument("--fixture", default="bank", choices=["bank"])
