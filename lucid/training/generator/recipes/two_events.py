@@ -10,6 +10,8 @@ from lucid.ir.perception import UncertaintyFlag
 from lucid.ir.training import (
     BasinTarget,
     Episode,
+    FrameSlotTarget,
+    FrameTarget,
     GateDirective,
     GoldLabels,
     GoldSpan,
@@ -81,6 +83,65 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
         trace_activations=[
             TraceTarget("coreference_chain", ref_weight, "pronoun_e1", True),
             TraceTarget("event_separation", event_sep, "e2_verb", True),
+        ],
+        frame_targets=[
+            FrameTarget(
+                frame_id="event_one",
+                frame_type="event",
+                slot_targets=[
+                    FrameSlotTarget(
+                        "slot_event_anchor",
+                        "event_separation",
+                        ["e1_verb"],
+                        {"event_anchor_like": 0.75},
+                        0.78,
+                    ),
+                    FrameSlotTarget(
+                        "slot_shared_object",
+                        "coreference_chain",
+                        ["theme", "pronoun_e1"],
+                        {"object_like": 0.75, "shared_referent_like": 0.75},
+                        0.78,
+                    ),
+                    FrameSlotTarget(
+                        "slot_context",
+                        "event_separation",
+                        ["e1_place"],
+                        {"context_like": 0.65},
+                        0.7,
+                    ),
+                ],
+                confidence=0.78,
+            ),
+            FrameTarget(
+                frame_id="event_two",
+                frame_type="event",
+                slot_targets=[
+                    FrameSlotTarget(
+                        "slot_event_anchor",
+                        "event_separation",
+                        ["e2_verb"],
+                        {"event_anchor_like": 0.75},
+                        0.74,
+                    ),
+                    FrameSlotTarget(
+                        "slot_shared_object",
+                        "coreference_chain",
+                        ["pronoun_e2"],
+                        {"object_like": 0.6, "shared_referent_like": 0.75},
+                        0.74,
+                    ),
+                    FrameSlotTarget(
+                        "slot_context",
+                        "event_separation",
+                        ["e2_place"],
+                        {"context_like": 0.65},
+                        0.7,
+                    ),
+                ],
+                unresolved_slot_names=[] if clear else ["pronoun_reference"],
+                confidence=0.74,
+            ),
         ],
         scope_assignments=[
             ScopeAssignment("e1_verb", "event_one"),

@@ -35,7 +35,13 @@ def _empty_store(name: str) -> Any:
     if name == "interference_graph":
         return {"gates": [], "edges": []}
     if name == "binding_affordances":
-        return {"patterns": []}
+        return {
+            "patterns": [],
+            "region_frame_hints": {
+                "main_clause": "event_one",
+                "relative_clause": "event_two",
+            },
+        }
     if name == "context_policy":
         return {"scope_patterns": [], "gate_patterns": []}
     if name == "lucidity_policy":

@@ -114,6 +114,7 @@ class OrchestratorRunner:
         ctx.extra["perception_config"] = perception_cfg
         if self.config.checkpoint:
             ctx.extra["checkpoint"] = self.config.checkpoint
+        ctx.extra["audit_base_dir"] = self.config.audit_base_dir
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()
@@ -153,8 +154,12 @@ class OrchestratorRunner:
         lucidity_feedback: list[str] = []
         prev_dmf_coverage: float | None = None
 
+        prior_binding_frames: list = []
         for iteration in range(max(1, int(self.config.max_iterations))):
             run.context.iteration_count = iteration
+            run.context.extra["lucidity_feedback"] = list(lucidity_feedback)
+            if prior_binding_frames:
+                run.context.extra["prior_candidate_frames"] = prior_binding_frames
 
             upstream_state: dict[str, Any] = {}
             if prev_dmf_coverage is not None:
@@ -181,12 +186,14 @@ class OrchestratorRunner:
                 dmf_output=run.dmf_output,
                 perceptual_evidence_graph=run.evidence_graph,
                 cue_cloud=run.cue_cloud,
+                prior_candidate_frames=list(prior_binding_frames),
             )
             run.binding_output = self._run_stage(
                 StageName.BINDING.value,
                 run,
                 run.binding_input,
             )
+            prior_binding_frames = list(run.binding_output.candidate_frames)
 
             run.context_op_input = ContextOpInput(
                 binding_candidate_frames=run.binding_output.candidate_frames,

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from math import log2
 from pathlib import Path
 
 from lucid.ir.common import HeatTier, MaturityState
 from lucid.ir.cue import CueCloud
+from lucid.audit.logger import content_hash
 from lucid.ir.dmf import (
     ActiveTrace,
     ConflictSignal,
@@ -16,6 +18,7 @@ from lucid.ir.dmf import (
     NoveltySignal,
     TraceCluster,
 )
+from lucid.ir.serde import to_dict
 
 
 @dataclass(slots=True)
@@ -55,6 +58,81 @@ class DmfTraceRecord:
     last_update_summary: str = ""
 
 
+def _index_link_map(raw: object) -> dict[int, float]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, float] = {}
+    for key, value in raw.items():
+        try:
+            idx = int(key)
+        except (TypeError, ValueError):
+            continue
+        out[idx] = float(value)
+    return out
+
+
+def trace_record_from_store(record: dict[str, object]) -> DmfTraceRecord:
+    """Build a runtime trace record from a checkpoint ``tracebank`` store row."""
+
+    cue_affinities = {
+        str(key): float(value)
+        for key, value in dict(record.get("cue_affinities") or {}).items()
+        if str(key)
+    }
+    family = str(record.get("trace_family") or record.get("alias") or "").strip()
+    if family and family not in cue_affinities:
+        cue_affinities[family] = max(cue_affinities.get(family, 0.0), 0.5)
+
+    created_from = record.get("created_from_cues") or record.get("created_from_episodes") or []
+    if not isinstance(created_from, list):
+        created_from = []
+
+    return DmfTraceRecord(
+        trace_id=str(record.get("trace_id") or ""),
+        alias=str(record.get("alias") or family),
+        cue_affinities=cue_affinities,
+        cluster_id=str(record.get("cluster_id") or family),
+        heat_tier=str(record.get("heat_tier") or HeatTier.HOT.value),
+        maturity_state=str(record.get("maturity_state") or MaturityState.PROVISIONAL.value),
+        activation_bias=float(record.get("activation_bias") or 0.0),
+        coactivation_links=_index_link_map(record.get("coactivation_links")),
+        conflict_links=_index_link_map(record.get("conflict_links")),
+        activation_count=int(record.get("activation_count") or 0),
+        success_count=int(record.get("success_count") or 0),
+        failure_count=int(record.get("failure_count") or 0),
+        created_from_cues=[str(item) for item in created_from if str(item)],
+        last_update_summary=str(record.get("last_update_summary") or ""),
+    )
+
+
+def tracebank_from_checkpoint(path: str | Path) -> list[DmfTraceRecord]:
+    """Load tracebank rows from a Lucid checkpoint directory."""
+
+    store_path = Path(path) / "tracebank.json"
+    if not store_path.exists():
+        return []
+    store = json.loads(store_path.read_text(encoding="utf-8"))
+    records = store.get("records", [])
+    if not isinstance(records, list):
+        return []
+    return [trace_record_from_store(item) for item in records if isinstance(item, dict)]
+
+
+def load_dynamic_memory_field(
+    checkpoint: str | Path | None = None,
+    *,
+    audit_base_dir: str | Path | None = "audit/dmf",
+) -> DynamicMemoryField:
+    """Construct DMF runtime state from an optional checkpoint tracebank."""
+
+    tracebank: list[DmfTraceRecord] = []
+    if checkpoint:
+        root = Path(checkpoint)
+        if root.exists():
+            tracebank = tracebank_from_checkpoint(root)
+    return DynamicMemoryField(tracebank=tracebank, audit_base_dir=audit_base_dir)
+
+
 class DynamicMemoryField:
     """Lean DMF runtime.
 
@@ -78,6 +156,11 @@ class DynamicMemoryField:
         self._trace_index_cluster: dict[int, str] = {}
         self._indexed_trace_count = 0
         self.rebuild_index()
+
+    def snapshot_id(self) -> str:
+        """Content hash of the current tracebank for audit snapshots."""
+
+        return content_hash([to_dict(trace) for trace in self.tracebank])
 
     def record_audit_event(self, event: DmfAuditEvent) -> None:
         self.audit_events.append(event)
