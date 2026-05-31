@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -17,7 +18,10 @@ def format_stage_ref(ref: StageAuditRef) -> str:
 
 def format_manifest(manifest: RunAuditManifest) -> str:
     if manifest.summary:
-        return "\n".join([manifest.summary.get("headline", ""), ""] + manifest.summary.get("lines", []))
+        return "\n".join(
+            [manifest.summary.get("headline", ""), ""]
+            + manifest.summary.get("lines", [])
+        )
     header = [
         f"run_id: {manifest.run_id}",
         f"lucidity: {manifest.lucidity_decision or '-'}",
@@ -48,9 +52,10 @@ def print_run(run_dir: Path | str, *, stage: str | None = None) -> None:
         return
 
     for ref in manifest.stages:
-        record = logger.load_stage_record(run_path, ref.stage_name)
+        record = json.loads((run_path / ref.file_name).read_text(encoding="utf-8"))
         summary = record.get("summary") or {}
-        print(f"--- {ref.stage_name}: {summary.get('headline', '')} ---")
+        label = ref.stage_name if ref.occurrence <= 1 else f"{ref.stage_name}#{ref.occurrence}"
+        print(f"--- {label}: {summary.get('headline', '')} ---")
         for line in summary.get("lines", []):
             print(f"  {line}")
         print()

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from lucid.ir.basins import BasinOutput
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import ComputePolicy
 from lucid.ir.context_op import ContextFrame
@@ -14,11 +13,36 @@ from lucid.ir.perception import PerceptualEvidenceGraph
 
 
 @dataclass(slots=True)
+class ProjectionGridPair:
+    pair_id: str
+    input_grid: list[list[int]]
+    output_grid: list[list[int]]
+
+
+@dataclass(slots=True)
 class ProjectionConstraints:
     output_shape_rules: dict[str, Any] = field(default_factory=dict)
     train_pair_refs: list[str] = field(default_factory=list)
     test_input_refs: list[str] = field(default_factory=list)
+    train_pairs: list[ProjectionGridPair] = field(default_factory=list)
+    test_inputs: list[list[list[int]]] = field(default_factory=list)
     max_rollouts: int = 4
+
+
+@dataclass(slots=True)
+class ProjectionOp:
+    op_type: str
+    params: dict[str, Any] = field(default_factory=dict)
+    source_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ProjectionProgram:
+    program_id: str
+    ops: list[ProjectionOp] = field(default_factory=list)
+    target_basin_ids: list[str] = field(default_factory=list)
+    assembly_id: str = ""
+    description: str = ""
 
 
 @dataclass(slots=True)
@@ -36,6 +60,7 @@ class ProjectorRollout:
     target_basin_ids: list[str] = field(default_factory=list)
     implied_artifact: dict[str, Any] = field(default_factory=dict)
     fit_scores: RolloutFitScores = field(default_factory=RolloutFitScores)
+    program: ProjectionProgram | None = None
     program_ref: str = ""
     failure_point: str = ""
 
@@ -59,4 +84,5 @@ class ProjectorOutput:
     rollouts: list[ProjectorRollout] = field(default_factory=list)
     best_rollout_id: str = ""
     recommendation: str = ""  # suggest_commit | search_wider | preserve_ambiguity
+    recommendation_to_lucidity: str = ""
     audit_notes: list[str] = field(default_factory=list)

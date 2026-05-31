@@ -1,6 +1,7 @@
 """Audit logger — readable + machine-parseable JSON per stage."""
 
-from lucid.audit.inspect import format_manifest, print_run
+from pathlib import Path
+
 from lucid.audit.logger import (
     AuditLogger,
     RunAuditManifest,
@@ -10,6 +11,19 @@ from lucid.audit.logger import (
     resolve_run_dir,
     summarize_stage_output,
 )
+
+
+def format_manifest(manifest: RunAuditManifest) -> str:
+    from lucid.audit.inspect import format_manifest as _format_manifest
+
+    return _format_manifest(manifest)
+
+
+def print_run(run_dir: Path | str, *, stage: str | None = None) -> None:
+    from lucid.audit.inspect import print_run as _print_run
+
+    _print_run(run_dir, stage=stage)
+
 
 __all__ = [
     "AuditLogger",

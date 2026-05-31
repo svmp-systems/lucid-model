@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from lucid.ir.basins import (
-    BasinInput,
     BasinOutput,
     CandidateBasinState,
     CompetitionSummary,
 )
-from lucid.ir.binding import BindingInput, BindingOutput, CandidateFrame
+from lucid.ir.binding import BindingOutput, CandidateFrame
 from lucid.ir.common import (
     AuditEnvelope,
     CommitShape,
@@ -23,16 +20,14 @@ from lucid.ir.common import (
     Provenance,
     TaskIntent,
 )
-from lucid.ir.context_op import ContextFrame, ContextOpInput, ContextOpOutput
+from lucid.ir.context_op import ContextFrame, ContextOpOutput
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.dmf import ActiveTrace, DmfInput, DmfOutput
-from lucid.ir.expression import DecoderInput, DecoderOutput
-from lucid.ir.interference import InterferenceInput, InterferenceOutput, TraceTraceEdge
+from lucid.ir.expression import DecoderOutput
+from lucid.ir.interference import InterferenceOutput, TraceTraceEdge
 from lucid.ir.lucidity import (
-    CheckResult,
     CommittedState,
     DecoderPolicy,
-    LucidityInput,
     LucidityOutput,
     SearchDirectives,
 )
