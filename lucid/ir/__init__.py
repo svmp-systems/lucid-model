@@ -54,7 +54,7 @@ from lucid.ir.projector import (
     ProjectorOutput,
 )
 from lucid.ir.serde import from_dict, from_json, to_dict, to_json
-from lucid.ir.training import Episode, GoldLabels, RunLog, TrainingEpisode
+from lucid.ir.training import Episode, FrameSlotTarget, FrameTarget, GoldLabels, RunLog, TrainingEpisode
 
 __all__ = [
     "AuditEnvelope",
@@ -80,6 +80,8 @@ __all__ = [
     "DmfInput",
     "DmfOutput",
     "Episode",
+    "FrameSlotTarget",
+    "FrameTarget",
     "GoldLabels",
     "InterferenceInput",
     "InterferenceOutput",

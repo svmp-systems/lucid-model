@@ -15,6 +15,44 @@ from lucid.cognition.orchestrator.stages import FunctionStage
 from lucid.cognition.orchestrator.stub_stages import build_default_stage_fns
 
 
+def test_orchestrator_dmf_activates_traces_from_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    train_exit = lucid_cli(
+        [
+            "train",
+            "dmf",
+            "--fixture",
+            "bank",
+            "--checkpoint",
+            str(checkpoint),
+            "--audit-dir",
+            str(tmp_path / "train-audit"),
+            "--steps",
+            "1",
+        ]
+    )
+    assert train_exit == 0
+
+    episode = Episode(
+        episode_id="ep-dmf",
+        modality=Modality.TEXT,
+        raw_input="I found money while kayaking and placed it in the bank.",
+        seed=1,
+    )
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=str(tmp_path / "audit"),
+            perception=PerceptionConfig(backend="rule"),
+            checkpoint=str(checkpoint),
+        )
+    )
+    run = runner.run_episode(episode)
+
+    assert run.dmf_output is not None
+    assert run.dmf_output.active_traces or run.dmf_output.novelty_signals
+    assert run.dmf_output.audit_log.get("tracebank_size", 0) >= 1
+
+
 def test_orchestrator_runs_and_writes_audit(tmp_path: Path) -> None:
     episode = Episode(
         episode_id="ep-1",

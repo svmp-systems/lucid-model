@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lucid.cognition.input.cue.encoder import normalize_cue_key
 from lucid.ir.training import Episode
 from lucid.training import adapters
 from lucid.training.checkpoints import CheckpointState
@@ -38,6 +39,7 @@ class DmfTrainer(ModuleTrainer):
             )
 
         updated: list[str] = []
+        span_by_id = {span.span_id: span for span in episode.gold.spans}
         for target in targets:
             family = target["trace_family"]
             record = find_record(store["records"], "trace_family", family)
@@ -58,6 +60,18 @@ class DmfTrainer(ModuleTrainer):
             old = float(record["cue_affinities"].get(family, 0.0))
             weight = float(target["weight"])
             record["cue_affinities"][family] = min(1.0, max(old, old + 0.2 * weight))
+            evidence_ref = str(target.get("evidence_ref") or "").strip()
+            if evidence_ref:
+                keys = {normalize_cue_key(evidence_ref)}
+                span = span_by_id.get(evidence_ref)
+                if span is not None:
+                    keys.add(normalize_cue_key(span.surface))
+                    keys.add(normalize_cue_key(span.span_id))
+                for key in keys:
+                    if not key:
+                        continue
+                    old_key = float(record["cue_affinities"].get(key, 0.0))
+                    record["cue_affinities"][key] = min(1.0, max(old_key, old_key + 0.2 * weight))
             record["activation_count"] = int(record.get("activation_count", 0)) + 1
             if episode.episode_id not in record["created_from_episodes"]:
                 record["created_from_episodes"].append(episode.episode_id)

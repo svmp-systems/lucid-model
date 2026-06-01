@@ -131,6 +131,30 @@ def binding_targets(episode: Episode) -> list[dict[str, Any]]:
     ]
 
 
+def binding_frame_targets(episode: Episode) -> list[dict[str, Any]]:
+    return [
+        {
+            "frame_id": target.frame_id,
+            "frame_type": target.frame_type,
+            "slot_targets": [
+                {
+                    "slot_id": slot.slot_id,
+                    "trace_family": slot.trace_family,
+                    "member_span_ids": list(slot.member_span_ids),
+                    "affinity_hints": dict(slot.affinity_hints),
+                    "confidence": float(slot.confidence),
+                }
+                for slot in target.slot_targets
+            ],
+            "role_assignments": dict(target.role_assignments),
+            "member_span_ids": list(target.member_span_ids),
+            "unresolved_slot_names": list(target.unresolved_slot_names),
+            "confidence": float(target.confidence),
+        }
+        for target in episode.gold.frame_targets
+    ]
+
+
 def context_targets(episode: Episode) -> dict[str, Any]:
     return {
         "scope_assignments": binding_targets(episode),

@@ -13,7 +13,11 @@ from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.cognition.projector import run_projector
+from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.audit.binding import write_binding_audit
+from lucid.ir.binding import BindingInput
+from lucid.memory.dmf import load_dynamic_memory_field
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
@@ -237,6 +241,76 @@ def _cmd_projector(args: argparse.Namespace) -> int:
         return 2
     out = run_projector(_grid_move_projector_fixture(args.max_rollouts))
     print(to_json(out))
+    return 0
+
+
+def _binding_bank_dmf_output(cue: CueCloud) -> DmfOutput:
+    return DmfOutput(
+        active_traces=[
+            ActiveTrace("t_found", 0.82),
+            ActiveTrace("t_money", 0.79),
+            ActiveTrace("t_kayak", 0.76),
+            ActiveTrace("t_placed", 0.74),
+            ActiveTrace("t_bank", 0.58),
+        ],
+        conflict_signals=[
+            ConflictSignal("t_kayak", "t_bank", severity=0.8),
+        ],
+        top_margin=0.04,
+        coverage_score=0.7,
+    )
+
+
+def _cmd_bind(args: argparse.Namespace) -> int:
+    try:
+        raw = args.text or _cue_fixture_text(args.fixture)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    perception_cfg = PerceptionConfig.from_env()
+    perception_cfg.backend = args.backend
+    graph = perceive(
+        PerceptionInput(raw_payload=raw, modality=Modality(args.modality)),
+        config=perception_cfg,
+    )
+    cue_input = CueEncoderInput(
+        perceptual_evidence_graph=graph,
+        task_intent_hint=args.task_intent,
+        retrieval_budget=args.retrieval_budget,
+    )
+    cloud = encode_cues(
+        cue_input,
+        config=CueEncoderConfig(checkpoint=args.checkpoint),
+    )
+
+    if args.checkpoint:
+        dmf = load_dynamic_memory_field(args.checkpoint, audit_base_dir=args.audit_dir)
+        dmf_output = dmf.run(
+            DmfInput(
+                cue_cloud=cloud,
+                compute_policy=ComputePolicy(max_active_traces=args.max_active),
+            )
+        )
+    else:
+        dmf_output = _binding_bank_dmf_output(cloud)
+
+    binding_input = BindingInput(
+        dmf_output=dmf_output,
+        perceptual_evidence_graph=graph,
+        cue_cloud=cloud,
+    )
+    binding_output = run_binding(
+        binding_input,
+        config=BindingConfig(checkpoint=args.checkpoint or None),
+    )
+    write_binding_audit(
+        audit_base_dir=args.audit_dir,
+        binding_input=binding_input,
+        binding_output=binding_output,
+        details={"checkpoint": args.checkpoint, "fixture": args.fixture, "text": raw},
+    )
+    print(to_json(binding_output))
     return 0
 
 
@@ -511,6 +585,18 @@ def _build_parser() -> argparse.ArgumentParser:
     projector_parser.add_argument("--fixture", default="grid-move", choices=["grid-move"])
     projector_parser.add_argument("--max-rollouts", type=int, default=1)
     projector_parser.set_defaults(func=_cmd_projector)
+
+    bind_parser = sub.add_parser("bind", help="Run binding on text or a fixture")
+    bind_parser.add_argument("text", nargs="?", help="Raw text; fixture is used when omitted")
+    bind_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    bind_parser.add_argument("--checkpoint", default="", help="Checkpoint for cue encoder and DMF")
+    bind_parser.add_argument("--backend", default="rule", choices=["rule", "llm"])
+    bind_parser.add_argument("--modality", default="text", choices=["text"])
+    bind_parser.add_argument("--task-intent", default="answer")
+    bind_parser.add_argument("--retrieval-budget", type=int, default=128)
+    bind_parser.add_argument("--max-active", type=int, default=8)
+    bind_parser.add_argument("--audit-dir", default="audit/binding")
+    bind_parser.set_defaults(func=_cmd_bind)
 
     dmf_parser = sub.add_parser("dmf", help="Run DMF on a built-in tracebank fixture")
     dmf_parser.add_argument("--fixture", default="bank", choices=["bank"])

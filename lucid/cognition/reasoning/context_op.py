@@ -482,7 +482,6 @@ def _frame_trace_ids(frame: CandidateFrame) -> list[str]:
     trace_ids.extend(_string_values(frame.role_assignments.values()))
     trace_ids.extend(_string_values(frame.relation_assignments.values()))
     trace_ids.extend(frame.supporting_trace_ids)
-    trace_ids.extend(frame.conflicting_trace_ids)
     return _dedupe(trace_ids)
 
 
