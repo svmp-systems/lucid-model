@@ -7,3 +7,5 @@ projector should filter out only information which is relevant to the task
 accepted compression threshold must be set along with threshold error
 
 coding must be done as to balance robustness
+
+note: Projector use is optional and is done only when the data is mixed up.
