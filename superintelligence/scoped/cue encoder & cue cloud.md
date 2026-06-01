@@ -139,8 +139,8 @@ PerceptualEvidenceGraph
 CueCloud → DMF
 ```
 
-Implementation: `lucid/cognition/input/cue/encoder.py`  
-Checkpoint store: `cue_encoder_map.json` (`feature_index`, `relation_index`, `cue_targets`)  
+Implementation: `lucid/cognition/input/cue/encoder.py`
+Checkpoint store: `cue_encoder_map.json` (`feature_index`, `relation_index`, `cue_targets`)
 CLI: `lucid cue-encoder`, `lucid train cue_encoder`
 
 ### L0 — Evidence compiler (rules)
