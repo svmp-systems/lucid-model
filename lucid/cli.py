@@ -42,6 +42,13 @@ from lucid.training.orchestrator.orchestrator import (
     UpdatePlanner,
     ValidationResult,
 )
+from lucid.paths import (
+    DEFAULT_AUDIT_BINDING,
+    DEFAULT_AUDIT_CUE_ENCODER,
+    DEFAULT_AUDIT_DMF,
+    DEFAULT_AUDIT_RUNS,
+    smoke_audit_dir,
+)
 from lucid.training.quantization import (
     RetrievalQualitySample,
     binary_signature,
@@ -509,6 +516,27 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return inspect_main(args.args)
 
 
+def _cmd_audit(args: argparse.Namespace) -> int:
+    if args.audit_cmd == "list":
+        from lucid.audit.layout import format_run_list, list_runs
+
+        print(format_run_list(list_runs(args.kind, module=args.module, limit=args.limit)))
+        return 0
+    if args.audit_cmd == "checkpoints":
+        from lucid.audit.layout import format_checkpoint_list, list_checkpoints
+
+        print(format_checkpoint_list(list_checkpoints()))
+        return 0
+    if args.audit_cmd == "layout":
+        from lucid.audit.layout import write_train_readmes
+
+        write_train_readmes()
+        print("wrote train/README.txt")
+        return 0
+    print("unknown audit command", file=sys.stderr)
+    return 2
+
+
 def _cmd_gen(args: argparse.Namespace) -> int:
     from lucid.training.generator.cli import main as gen_main
 
@@ -579,7 +607,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run_parser = sub.add_parser("run", help="Run one Episode JSON through the pipeline")
     run_parser.add_argument("episode", help="Path to Episode JSON or JSONL")
-    run_parser.add_argument("--audit-dir", default="audit", help="Audit base directory")
+    run_parser.add_argument(
+        "--audit-dir",
+        default=DEFAULT_AUDIT_RUNS,
+        help="Audit base directory",
+    )
     run_parser.add_argument("--perception", default="", choices=["", "rule", "llm"])
     run_parser.add_argument("--checkpoint", default="", help="Checkpoint for runtime stores")
     run_parser.set_defaults(func=_cmd_run)
@@ -597,7 +629,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=AmbiguityPolicy.PRESERVE_PLURAL.value,
         choices=[policy.value for policy in AmbiguityPolicy],
     )
-    cue_parser.add_argument("--audit-dir", default="audit/cue_encoder")
+    cue_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_CUE_ENCODER)
     cue_parser.set_defaults(func=_cmd_cue_encoder)
 
     context_parser = sub.add_parser("context-op", help="Run context-op on a built-in fixture")
@@ -632,7 +664,7 @@ def _build_parser() -> argparse.ArgumentParser:
     bind_parser.add_argument("--task-intent", default="answer")
     bind_parser.add_argument("--retrieval-budget", type=int, default=128)
     bind_parser.add_argument("--max-active", type=int, default=8)
-    bind_parser.add_argument("--audit-dir", default="audit/binding")
+    bind_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_BINDING)
     bind_parser.set_defaults(func=_cmd_bind)
 
     dmf_parser = sub.add_parser("dmf", help="Run DMF on a built-in tracebank fixture")
@@ -644,7 +676,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override fixture cue with cue_key=weight; repeat for multiple cues",
     )
     dmf_parser.add_argument("--max-active", type=int, default=4)
-    dmf_parser.add_argument("--audit-dir", default="audit/dmf")
+    dmf_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_DMF)
     dmf_parser.add_argument("--learn", action="store_true", help="Apply one audited learning step")
     dmf_parser.set_defaults(func=_cmd_dmf)
 
@@ -666,6 +698,25 @@ def _build_parser() -> argparse.ArgumentParser:
     train_parser = sub.add_parser("train", help="Run module or global training commands")
     train_parser.add_argument("args", nargs=argparse.REMAINDER)
     train_parser.set_defaults(func=_cmd_train)
+
+    audit_parser = sub.add_parser("audit", help="List audits and checkpoints under train/")
+    audit_sub = audit_parser.add_subparsers(dest="audit_cmd", required=True)
+
+    audit_list = audit_sub.add_parser("list", help="List recent audit runs")
+    audit_list.add_argument(
+        "--kind",
+        choices=["smoke", "training", "pipeline", "scaling"],
+        default="smoke",
+    )
+    audit_list.add_argument("--module", default="")
+    audit_list.add_argument("--limit", type=int, default=20)
+    audit_list.set_defaults(func=_cmd_audit, audit_cmd="list")
+
+    audit_ckpt = audit_sub.add_parser("checkpoints", help="List checkpoint directories")
+    audit_ckpt.set_defaults(func=_cmd_audit, audit_cmd="checkpoints")
+
+    audit_layout = audit_sub.add_parser("layout", help="Write train/README.txt")
+    audit_layout.set_defaults(func=_cmd_audit, audit_cmd="layout")
 
     inspect_parser = sub.add_parser("inspect", help="Inspect audit output")
     inspect_parser.add_argument("args", nargs=argparse.REMAINDER)

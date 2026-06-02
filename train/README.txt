@@ -8,10 +8,7 @@ Never: git add train/checkpoints/ train/data/ train/audit/
   audit/runs/training/   training step audits
   audit/runs/pipeline/   pipeline run audits
   audit/runs/smoke/      CLI smoke audits
-<<<<<<< Updated upstream
   audit/scaling/         cost/quality points.jsonl (secrets redacted on write)
-=======
->>>>>>> Stashed changes
 
 Regenerate phase-1 pack:
   py -c "from lucid.training.generator.cli import main; main(['pack','phase1','--out','train/data/generated/phase1'])"

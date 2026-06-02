@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 from typing import Any
 
+from lucid.audit.direct_run import safe_token, utc_now_iso
 from lucid.audit.logger import content_hash
+from lucid.audit.sanitize import sanitize_audit_value
 from lucid.ir.serde import to_dict, to_json
 from lucid.memory.dmf import DmfAuditEvent
+from lucid.paths import DEFAULT_AUDIT_DMF, resolve_train_path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -24,16 +27,11 @@ class DmfTraceUpdateRecord:
     summary: dict[str, Any] = field(default_factory=dict)
 
 
-def _safe_path_part(value: str) -> str:
-    clean = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
-    return (clean.strip("_") or "dmf")[:80]
-
-
 class DmfUpdateAuditLogger:
     """Write one readable JSON file per DMF learning or lifecycle event."""
 
-    def __init__(self, base_dir: Path | str = "audit/dmf") -> None:
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir: Path | str = DEFAULT_AUDIT_DMF) -> None:
+        self.base_dir = resolve_train_path(base_dir, mkdir=True)
 
     def write_event(
         self,
@@ -69,10 +67,23 @@ class DmfUpdateAuditLogger:
             },
         )
 
-        event_dir = self.base_dir / _safe_path_part(event.event_type)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        event_token = safe_token(event.event_type, max_len=40)
+        file_name = f"{stamp}_{event_token}.json"
+        event_dir = self.base_dir / event_token
         event_dir.mkdir(parents=True, exist_ok=True)
-        path = event_dir / f"{uuid4()}.json"
+        path = event_dir / file_name
         event.audit_path = str(path)
-        payload = {"schema_version": SCHEMA_VERSION, **to_dict(record)}
+        payload = sanitize_audit_value(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "smoke",
+                "created_at": utc_now_iso(),
+                "run_id": file_name.removesuffix(".json"),
+                "module": "dmf",
+                "event_type": event.event_type,
+                **to_dict(record),
+            }
+        )
         path.write_text(to_json(payload), encoding="utf-8")
         return path

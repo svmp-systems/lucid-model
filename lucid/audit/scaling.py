@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+from lucid.audit.sanitize import sanitize_audit_value
 from lucid.ir.pipeline import PipelineRun
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
+from lucid.paths import DEFAULT_AUDIT_SCALING
 
 # --- types ---
 
@@ -55,7 +57,7 @@ class ScalingPoint:
 @dataclass(slots=True)
 class ScalingConfig:
     enabled: bool = True
-    data_dir: Path = Path("audit/scaling")
+    data_dir: Path = Path(DEFAULT_AUDIT_SCALING)
     build_phase: int = 1
     hardware_class: str = "local"
 
@@ -70,7 +72,7 @@ class ScalingConfig:
     @classmethod
     def from_env(cls) -> ScalingConfig:
         enabled = os.environ.get("LUCID_SCALING", "1").strip().lower() not in ("0", "false", "no", "off")
-        base = os.environ.get("LUCID_SCALING_DIR", "audit/scaling").strip() or "audit/scaling"
+        base = os.environ.get("LUCID_SCALING_DIR", DEFAULT_AUDIT_SCALING).strip() or DEFAULT_AUDIT_SCALING
         try:
             phase = int(os.environ.get("LUCID_BUILD_PHASE", "1"))
         except ValueError:
@@ -145,8 +147,9 @@ def iter_points(path: Path) -> Iterator[dict[str, Any]]:
 
 def _append_point(path: Path, point: ScalingPoint) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = sanitize_audit_value(to_dict(point))
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(to_dict(point), ensure_ascii=False, default=str))
+        handle.write(json.dumps(payload, ensure_ascii=False, default=str))
         handle.write("\n")
 
 

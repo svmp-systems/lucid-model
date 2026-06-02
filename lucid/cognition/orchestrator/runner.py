@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from lucid.audit.logger import AuditLogger
+from lucid.paths import DEFAULT_AUDIT_RUNS, resolve_train_path
 from lucid.ir.basins import BasinInput
 from lucid.ir.binding import BindingInput
 from lucid.ir.common import AmbiguityPolicy, LucidityDecision, Modality, TaskIntent
@@ -46,6 +48,13 @@ def _stage_key(stage_name: StageName | str) -> str:
     if isinstance(stage_name, StageName):
         return stage_name.value
     return str(stage_name)
+
+
+def _pipeline_run_id(episode: Episode) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    label = (episode.episode_id or episode.template_id or "episode").strip()
+    clean = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:40].strip("_") or "episode"
+    return f"{stamp}_{clean}_{uuid4().hex[:6]}"
 
 
 def _is_grid(value: Any) -> bool:
@@ -159,7 +168,7 @@ def _projection_constraints_from_episode(episode: Episode) -> ProjectionConstrai
 
 @dataclass(slots=True)
 class OrchestratorConfig:
-    audit_base_dir: str = "audit"
+    audit_base_dir: str = DEFAULT_AUDIT_RUNS
     adapter_version: str = "0.1.0"
     enable_projector: bool = True
     max_iterations: int = 2
@@ -201,7 +210,7 @@ class OrchestratorRunner:
         turn_index: int = 0,
     ) -> PipelineRun:
         ctx = RunContext(
-            run_id=str(uuid4()),
+            run_id=_pipeline_run_id(episode),
             session_id=session_id,
             turn_index=turn_index,
             mode="inference",
@@ -223,7 +232,7 @@ class OrchestratorRunner:
         ctx.extra["perception_config"] = perception_cfg
         if self.config.checkpoint:
             ctx.extra["checkpoint"] = self.config.checkpoint
-        ctx.extra["audit_base_dir"] = self.config.audit_base_dir
+        ctx.extra["audit_base_dir"] = str(resolve_train_path(self.config.audit_base_dir))
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()

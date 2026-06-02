@@ -99,7 +99,7 @@ def test_failed_stage_writes_partial_audit(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="stage dmf failed"):
         runner.run_episode(episode)
 
-    run_dirs = list((tmp_path / "runs").iterdir())
+    run_dirs = [p for p in tmp_path.iterdir() if p.is_dir() and (p / "manifest.json").is_file()]
     assert len(run_dirs) == 1
     manifest = json.loads((run_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
     assert [stage["stage_name"] for stage in manifest["stages"]] == [
@@ -179,7 +179,14 @@ def test_cli_accepts_pretty_json_with_bom(tmp_path: Path) -> None:
     )
 
     assert exit_code == 0
-    assert list((tmp_path / "audit" / "runs").iterdir())
+    audit_runs = [
+        p
+        for p in (tmp_path / "audit").iterdir()
+        if p.is_dir() and (p / "manifest.json").is_file()
+    ]
+    assert len(audit_runs) == 1
+    assert audit_runs[0].name.startswith("20")
+    assert "ep-cli" in audit_runs[0].name
 
 def test_cli_runs_perception_component(capsys) -> None:
     exit_code = lucid_cli(["perceive", "go to the bank", "--backend", "rule", "--compact"])

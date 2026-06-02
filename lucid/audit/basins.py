@@ -2,23 +2,11 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-from lucid.audit.logger import content_hash
+from lucid.audit.direct_run import write_smoke_run
 from lucid.ir.basins import BasinInput, BasinOutput
-from lucid.ir.serde import to_dict
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(json.dumps(to_dict(payload), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def write_basins_audit(
@@ -28,45 +16,39 @@ def write_basins_audit(
     basin_output: BasinOutput,
     details: dict[str, Any] | None = None,
 ) -> Path:
-    run_id = uuid4().hex
-    run_dir = Path(audit_base_dir) / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    label = str((details or {}).get("fixture") or "run")
 
-    files = {
-        "input": "input.json",
-        "output": "output.json",
-        "manifest": "manifest.json",
-        "readme": "README.txt",
-    }
-    _write_json(run_dir / files["input"], basin_input)
-    _write_json(run_dir / files["output"], basin_output)
+    def _extra(_inp: BasinInput, out: BasinOutput) -> dict[str, Any]:
+        summary = out.competition_summary
+        return {
+            "candidate_basin_count": len(out.candidate_basin_states),
+            "basin_ids": [state.basin_id for state in out.candidate_basin_states],
+            "top_basin_id": summary.top_basin_id,
+            "top_margin": summary.top_margin,
+            "active_basin_count": summary.active_basin_count,
+            "unresolved_conflict_count": len(out.unresolved_conflicts),
+            "audit_notes": list(out.audit_notes),
+        }
 
-    states = basin_output.candidate_basin_states
-    summary = basin_output.competition_summary
-    manifest = {
-        "schema_version": 1,
-        "created_at": _utc_now_iso(),
-        "run_id": run_id,
-        "stage_name": "basins",
-        "input_hash": content_hash(basin_input),
-        "output_hash": content_hash(basin_output),
-        "candidate_basin_count": len(states),
-        "basin_ids": [state.basin_id for state in states],
-        "top_basin_id": summary.top_basin_id,
-        "top_margin": summary.top_margin,
-        "active_basin_count": summary.active_basin_count,
-        "unresolved_conflict_count": len(basin_output.unresolved_conflicts),
-        "audit_notes": list(basin_output.audit_notes),
-        "files": files,
-        "details": details or {},
-    }
-    _write_json(run_dir / files["manifest"], manifest)
+    def _readme(module: str, run_label: str, _inp: BasinInput, out: BasinOutput) -> list[str]:
+        summary = out.competition_summary
+        return [
+            f"smoke run: {module}",
+            "",
+            f"label: {run_label}",
+            f"candidate_basins: {len(out.candidate_basin_states)}",
+            f"top_basin: {summary.top_basin_id or '-'}",
+            f"top_margin: {summary.top_margin:.3f}",
+            f"conflicts: {len(out.unresolved_conflicts)}",
+        ]
 
-    readme = (
-        f"Basins audit {run_id}\n"
-        f"Candidates: {len(states)}  Top: {summary.top_basin_id or '-'}  "
-        f"Margin: {summary.top_margin:.3f}\n"
-        f"Conflicts: {len(basin_output.unresolved_conflicts)}\n"
+    return write_smoke_run(
+        module="basins",
+        label=label,
+        stage_input=basin_input,
+        stage_output=basin_output,
+        audit_base_dir=audit_base_dir,
+        build_manifest_extra=_extra,
+        build_readme_lines=_readme,
+        details=details,
     )
-    (run_dir / files["readme"]).write_text(readme, encoding="utf-8")
-    return run_dir
