@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from lucid.audit.logger import content_hash
+from lucid.paths import DEFAULT_CHECKPOINT, resolve_train_path
 
 
 STORE_FILES: dict[str, str] = {
@@ -85,8 +86,8 @@ def empty_checkpoint(checkpoint_id: str = "local") -> CheckpointState:
     )
 
 
-def load_checkpoint(path: str | Path, *, create: bool = True) -> CheckpointState:
-    root = Path(path)
+def load_checkpoint(path: str | Path = DEFAULT_CHECKPOINT, *, create: bool = True) -> CheckpointState:
+    root = resolve_train_path(path)
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
         if not create:
@@ -115,7 +116,7 @@ def save_checkpoint(
     force: bool = False,
     step_delta: int = 0,
 ) -> Path:
-    root = Path(path)
+    root = resolve_train_path(path, mkdir=True)
     manifest_path = root / "manifest.json"
     if root.exists() and any(root.iterdir()) and not manifest_path.exists() and not force:
         raise FileExistsError(
