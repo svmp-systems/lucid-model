@@ -110,9 +110,9 @@ def test_same_output_same_hash(audit_base: Path):
     logger = AuditLogger(base_dir=audit_base)
     dir_a = logger.write_pipeline_run(_sample_run(run_id="a"))
     dir_b = logger.write_pipeline_run(_sample_run(run_id="b"))
-    assert logger.load_stage_record(dir_a, "dmf")["output_hash"] == logger.load_stage_record(dir_b, "dmf")[
-        "output_hash"
-    ]
+    hash_a = logger.load_stage_record(dir_a, "dmf")["output_hash"]
+    hash_b = logger.load_stage_record(dir_b, "dmf")["output_hash"]
+    assert hash_a == hash_b
 
 
 def test_pretty_print(capsys, audit_base: Path):
@@ -133,3 +133,9 @@ def test_no_run_log_json(audit_base: Path):
 def test_summarize_stage_output():
     s = summarize_stage_output("perception", {"candidate_units": [{"surface": "bank"}]})
     assert "bank" in s["headline"] or any("bank" in line for line in s["lines"])
+
+
+def test_summarize_decoder_grid_output():
+    s = summarize_stage_output("decoder", {"surface_grid": [[0, 1], [0, 0]]})
+    assert s["headline"] == "grid 2x2"
+    assert "surface_grid: 2x2" in s["lines"]

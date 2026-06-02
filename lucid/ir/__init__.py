@@ -45,7 +45,14 @@ from lucid.ir.lucidity import (
 from lucid.ir.memory import BasinRecord, TraceRecord
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.pipeline import PipelineRun, RunContext, SessionState, StageName, StageResult
-from lucid.ir.projector import ProjectorInput, ProjectorOutput
+from lucid.ir.projector import (
+    ProjectionConstraints,
+    ProjectionGridPair,
+    ProjectionOp,
+    ProjectionProgram,
+    ProjectorInput,
+    ProjectorOutput,
+)
 from lucid.ir.serde import from_dict, from_json, to_dict, to_json
 from lucid.ir.training import Episode, FrameSlotTarget, FrameTarget, GoldLabels, RunLog, TrainingEpisode
 
@@ -87,6 +94,10 @@ __all__ = [
     "PipelineRun",
     "ProjectorInput",
     "ProjectorOutput",
+    "ProjectionConstraints",
+    "ProjectionGridPair",
+    "ProjectionOp",
+    "ProjectionProgram",
     "Provenance",
     "RunContext",
     "RunLog",

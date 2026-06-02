@@ -51,10 +51,10 @@ Post-implementation:  aggregate → summarize → plot → write PHASE3_GO_NO_GO
 
 Use for:
 
-- **Mode A** — module calibration vs generator gold  
-- **Mode B** — stacked stages (real upstream + module under test)  
-- **Mode C** — full pipeline + orchestrator  
-- **Inference** — chat/CLI/API turns (cost per turn, latency)  
+- **Mode A** — module calibration vs generator gold
+- **Mode B** — stacked stages (real upstream + module under test)
+- **Mode C** — full pipeline + orchestrator
+- **Inference** — chat/CLI/API turns (cost per turn, latency)
 - **Eval campaigns** — Arc, BabyLM, private holdout (benchmark score vs campaign GPU-h / $)
 
 **Never** plot Mode A and Mode C on one curve without `training_mode` and `module_under_test` labels.
@@ -424,9 +424,9 @@ Capability matrix pass rate, audit coverage %, false commit rate — internal on
 
 Do not expect public data for:
 
-- Per-module gold recall curves  
-- Cost per promoted patch  
-- Your `ScalingPoint` schema  
+- Per-module gold recall curves
+- Cost per promoted patch
+- Your `ScalingPoint` schema
 
 **Do expect** public benchmark scores; occasional order-of-magnitude train compute in papers; API $ for inference proxies.
 
@@ -510,19 +510,19 @@ Do **not** block Phase 1 pipeline on plots or frontier CSV.
 
 ### Implementation
 
-- Storing derived metrics in JSONL without raw fields (can't recompute)  
-- Omitting `config_hash` / `scale_id`  
-- Mixing train and inference in one point without `run_kind`  
+- Storing derived metrics in JSONL without raw fields (can't recompute)
+- Omitting `config_hash` / `scale_id`
+- Mixing train and inference in one point without `run_kind`
 - Auto-scraping frontier training logs as “measured”
 
 ### Post-implementation / graphs
 
-- Lucid module gold vs frontier MMLU on same axes  
-- Linear X from 1 GPU-h to frontier pretrain FLOPs without log scale  
-- Training $ for lucid vs API inference $ for frontier on one chart  
-- Frontier points without `confidence` / source in appendix  
-- “10,000× cheaper” without shared benchmark + sourced estimates  
-- Plotting Mode A and Mode C as one line  
+- Lucid module gold vs frontier MMLU on same axes
+- Linear X from 1 GPU-h to frontier pretrain FLOPs without log scale
+- Training $ for lucid vs API inference $ for frontier on one chart
+- Frontier points without `confidence` / source in appendix
+- “10,000× cheaper” without shared benchmark + sourced estimates
+- Plotting Mode A and Mode C as one line
 
 ### Comparison narrative
 

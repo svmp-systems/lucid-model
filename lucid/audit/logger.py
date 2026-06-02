@@ -179,11 +179,30 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
     elif stage_name == "decoder":
         refused = data.get("refused", False)
         text = (data.get("surface_text") or "").strip()
+        grid = data.get("surface_grid")
+        action = data.get("surface_action")
         lines.append(f"refused: {refused}")
         if text:
             preview = text[:120] + ("…" if len(text) > 120 else "")
             lines.append(f"surface_text: {preview}")
-        headline = "refused" if refused else (text[:60] + "…" if len(text) > 60 else text or "empty")
+        if isinstance(grid, list):
+            rows = len(grid)
+            cols = len(grid[0]) if rows and isinstance(grid[0], list) else 0
+            lines.append(f"surface_grid: {rows}x{cols}")
+        if isinstance(action, dict) and action:
+            lines.append(f"surface_action_keys: {', '.join(sorted(action)[:6])}")
+        if refused:
+            headline = "refused"
+        elif text:
+            headline = text[:60] + "…" if len(text) > 60 else text
+        elif isinstance(grid, list):
+            rows = len(grid)
+            cols = len(grid[0]) if rows and isinstance(grid[0], list) else 0
+            headline = f"grid {rows}x{cols}"
+        elif isinstance(action, dict) and action:
+            headline = "action"
+        else:
+            headline = "empty"
 
     else:
         keys = ", ".join(sorted(data.keys())[:8])
@@ -471,7 +490,8 @@ class AuditLogger:
         return from_dict(data, RunAuditManifest)
 
     def load_stage_record(self, run_dir: Path | str, stage_name: str) -> dict[str, Any]:
-        return json.loads((Path(run_dir) / _stage_file_name(stage_name)).read_text(encoding="utf-8"))
+        path = Path(run_dir) / _stage_file_name(stage_name)
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def load_stage_envelope(self, run_dir: Path | str, stage_name: str) -> AuditEnvelope:
         """Rebuild AuditEnvelope from on-disk stage record (for older callers)."""
@@ -487,5 +507,9 @@ class AuditLogger:
                 "output_hash": record.get("output_hash", ""),
             },
             adapter_version=record.get("adapter_version", ""),
-            provenance=from_dict(record["provenance"], Provenance) if record.get("provenance") else None,
+            provenance=(
+                from_dict(record["provenance"], Provenance)
+                if record.get("provenance")
+                else None
+            ),
         )

@@ -29,7 +29,7 @@ from lucid.ir.pipeline import (
     StageName,
     StageResult,
 )
-from lucid.ir.projector import ProjectorInput
+from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
 from lucid.cognition.input.perception import PerceptionConfig
@@ -46,6 +46,115 @@ def _stage_key(stage_name: StageName | str) -> str:
     if isinstance(stage_name, StageName):
         return stage_name.value
     return str(stage_name)
+
+
+def _is_grid(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(row, list) for row in value)
+        and all(isinstance(cell, int) for row in value for cell in row)
+    )
+
+
+def _grid_pairs_from_raw(raw_input: Any) -> list[ProjectionGridPair]:
+    if not isinstance(raw_input, dict):
+        return []
+    pairs: list[ProjectionGridPair] = []
+    raw_pairs = raw_input.get("train") or raw_input.get("train_pairs") or []
+    if isinstance(raw_pairs, list):
+        for index, item in enumerate(raw_pairs):
+            if not isinstance(item, dict):
+                continue
+            input_grid = item.get("input") or item.get("input_grid")
+            output_grid = item.get("output") or item.get("output_grid")
+            if _is_grid(input_grid) and _is_grid(output_grid):
+                pairs.append(
+                    ProjectionGridPair(
+                        pair_id=str(item.get("pair_id") or item.get("id") or f"pair_{index}"),
+                        input_grid=input_grid,
+                        output_grid=output_grid,
+                    )
+                )
+
+    input_grid = raw_input.get("input") or raw_input.get("input_grid")
+    output_grid = raw_input.get("output") or raw_input.get("output_grid")
+    if _is_grid(input_grid) and _is_grid(output_grid):
+        pairs.append(
+            ProjectionGridPair(
+                pair_id="pair_0" if not pairs else f"pair_{len(pairs)}",
+                input_grid=input_grid,
+                output_grid=output_grid,
+            )
+        )
+    return pairs
+
+
+def _test_inputs_from_raw(raw_input: Any) -> list[list[list[int]]]:
+    if not isinstance(raw_input, dict):
+        return []
+    raw_tests = raw_input.get("test") or raw_input.get("test_inputs") or []
+    tests: list[list[list[int]]] = []
+    if _is_grid(raw_tests):
+        tests.append(raw_tests)
+    elif isinstance(raw_tests, list):
+        for item in raw_tests:
+            if _is_grid(item):
+                tests.append(item)
+            elif isinstance(item, dict):
+                candidate = item.get("input") or item.get("input_grid")
+                if _is_grid(candidate):
+                    tests.append(candidate)
+    input_grid = raw_input.get("input") or raw_input.get("input_grid")
+    if not tests and _is_grid(input_grid):
+        tests.append(input_grid)
+    return tests
+
+
+def _projection_constraints_from_episode(episode: Episode) -> ProjectionConstraints:
+    raw_constraints = episode.constraints if isinstance(episode.constraints, dict) else {}
+    projection = raw_constraints.get("projection")
+    if not isinstance(projection, dict):
+        projection = raw_constraints
+
+    max_rollouts = projection.get("max_rollouts", 4)
+    try:
+        max_rollouts_int = int(max_rollouts)
+    except (TypeError, ValueError):
+        max_rollouts_int = 4
+
+    train_pairs = _grid_pairs_from_raw(episode.raw_input)
+    for index, item in enumerate(projection.get("train_pairs") or []):
+        if not isinstance(item, dict):
+            continue
+        input_grid = item.get("input") or item.get("input_grid")
+        output_grid = item.get("output") or item.get("output_grid")
+        if _is_grid(input_grid) and _is_grid(output_grid):
+            pair_id = str(
+                item.get("pair_id") or item.get("id") or f"constraint_pair_{index}"
+            )
+            train_pairs.append(
+                ProjectionGridPair(
+                    pair_id=pair_id,
+                    input_grid=input_grid,
+                    output_grid=output_grid,
+                )
+            )
+
+    test_inputs = _test_inputs_from_raw(episode.raw_input)
+    for item in projection.get("test_inputs") or []:
+        if _is_grid(item):
+            test_inputs.append(item)
+
+    output_shape_rules = projection.get("output_shape_rules") or {}
+    return ProjectionConstraints(
+        output_shape_rules=output_shape_rules if isinstance(output_shape_rules, dict) else {},
+        train_pair_refs=[str(ref) for ref in projection.get("train_pair_refs") or []],
+        test_input_refs=[str(ref) for ref in projection.get("test_input_refs") or []],
+        train_pairs=train_pairs,
+        test_inputs=test_inputs,
+        max_rollouts=max_rollouts_int,
+    )
 
 
 @dataclass(slots=True)
@@ -254,9 +363,11 @@ class OrchestratorRunner:
                 directives = run.lucidity_output.search_directives or SearchDirectives()
                 run.projector_input = ProjectorInput(
                     projection_request=directives,
+                    target_basin_ids=list(directives.projector_targets),
                     candidate_frames=run.binding_output.candidate_frames,
                     context_frames=run.context_op_output.context_frames,
                     perceptual_evidence_graph=run.evidence_graph,
+                    constraints=_projection_constraints_from_episode(episode),
                     task_intent=str(episode.task_intent),
                 )
                 run.projector_output = self._run_stage(
@@ -264,6 +375,7 @@ class OrchestratorRunner:
                     run,
                     run.projector_input,
                 )
+                run.cost_metrics.projector_rollout_count = len(run.projector_output.rollouts)
 
                 run.lucidity_input = LucidityInput(
                     basin_output=run.basin_output,
