@@ -145,10 +145,19 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
 
     elif stage_name == "interference":
         tt = len(data.get("trace_trace_edges") or [])
+        tf = len(data.get("trace_frame_edges") or [])
         fb = len(data.get("frame_basin_edges") or [])
+        scoped = len(data.get("scoped_basin_energy_deltas") or [])
+        conflicts = len(data.get("conflict_reports") or [])
         lines.append(f"trace_trace_edges: {tt}")
+        lines.append(f"trace_frame_edges: {tf}")
         lines.append(f"frame_basin_edges: {fb}")
-        headline = f"{tt} trace edges, {fb} frame→basin edges"
+        lines.append(f"scoped_basin_energy_deltas: {scoped}")
+        lines.append(f"conflict_reports: {conflicts}")
+        notes = data.get("audit_notes") or []
+        if notes:
+            lines.append(f"audit: {notes[0]}")
+        headline = f"{tt} trace edges, {scoped} scoped basin deltas, {conflicts} conflicts"
 
     elif stage_name == "basins":
         basins = data.get("candidate_basin_states") or []

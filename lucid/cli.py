@@ -9,12 +9,14 @@ from json import JSONDecodeError
 from pathlib import Path
 
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.cognition.reasoning.interference import run_interference
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.ir.common import Modality
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfOutput
+from lucid.ir.interference import InterferenceInput
 from lucid.ir.perception import PerceptionInput
 from lucid.ir.perception import CandidateUnit, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.serde import from_json, to_json
@@ -153,6 +155,28 @@ def _cmd_context_op(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_interference(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown interference fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    context_input = _bank_context_fixture(feedback=args.feedback)
+    context_output = run_context_op(context_input)
+    out = run_interference(
+        InterferenceInput(
+            context_frames=context_output.context_frames,
+            candidate_frames=context_input.binding_candidate_frames,
+            dmf_output=context_input.dmf_output,
+            interference_gates=context_output.interference_gates,
+            scoped_trace_assignments=context_output.scoped_trace_assignments,
+            frame_links=context_output.frame_links,
+            local_basin_pressures=context_output.local_basin_pressures,
+        )
+    )
+    print(to_json(out))
+    return 0
+
+
 def _cmd_inspect(args: argparse.Namespace) -> int:
     from lucid.audit.inspect import main as inspect_main
 
@@ -195,6 +219,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lucidity feedback token, e.g. SEARCH_WIDER",
     )
     context_parser.set_defaults(func=_cmd_context_op)
+
+    interference_parser = sub.add_parser("interference", help="Run interference on a built-in fixture")
+    interference_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    interference_parser.add_argument(
+        "--feedback",
+        action="append",
+        default=[],
+        help="Lucidity feedback token passed through context-op first",
+    )
+    interference_parser.set_defaults(func=_cmd_interference)
 
     inspect_parser = sub.add_parser("inspect", help="Inspect audit output")
     inspect_parser.add_argument("args", nargs=argparse.REMAINDER)

@@ -21,6 +21,7 @@ from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.cognition.reasoning.interference import run_interference
 
 
 def _lucidity_target_to_decision(target: str) -> LucidityDecision:
@@ -64,7 +65,7 @@ def context_op(inp: ContextOpInput, _ctx: object) -> ContextOpOutput:
 
 
 def interference(inp: InterferenceInput, _ctx: object) -> InterferenceOutput:
-    return InterferenceOutput()
+    return run_interference(inp)
 
 
 def basins(inp: BasinInput, _ctx: object) -> BasinOutput:
