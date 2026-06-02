@@ -109,7 +109,6 @@ class SearchDirectives:
     search_target: SearchTarget = SearchTarget.ALL
     cue_budget_multiplier: float = 1.0
     allow_new_frames: bool = False
-    allow_provisional_basins: bool = False
     projector_targets: list[str] = field(default_factory=list)
     max_rollouts: int = 0
     rollout_mode: str = "none"  # none | single_step | multi_step

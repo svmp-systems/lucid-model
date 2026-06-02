@@ -47,8 +47,6 @@ class BasinsTrainer(ModuleTrainer):
                     "family_hint": family,
                     "frame_affinities": {},
                     "support_examples": [],
-                    "maturity_state": "provisional",
-                    "heat_tier": "hot",
                 }
                 store["records"].append(record)
             frame_id = target["frame_id"] or "unscoped"

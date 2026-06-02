@@ -218,11 +218,25 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Local pipeline audit artifacts (per-run JSON trees)
-/audit/
+# Local pipeline audits (never commit run trees)
+audit/
+
+# Local checkpoints at repo root (train/checkpoints/ is under /train/**)
+checkpoints/
+<<<<<<< Updated upstream
+
+# Local training tree: weights, episodes, audits (only train/README.txt may be committed)
+/train/**
+!/train/README.txt
+=======
+>>>>>>> Stashed changes
 
 # Lucid generator output (rebuild with lucid-gen; recipes stay in git)
 data/generated/
 data/episodes/
 data/fixtures/
+
+# Local training tree: weights, episodes, audits (only train/README.txt may be committed)
+/train/**
+!/train/README.txt
 
