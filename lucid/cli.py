@@ -8,14 +8,17 @@ import sys
 from json import JSONDecodeError
 from pathlib import Path
 
+from lucid.audit.basins import write_basins_audit
 from lucid.audit.cue import write_cue_encoder_audit
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.cognition.projector import run_projector
+from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.audit.binding import write_binding_audit
+from lucid.ir.basins import BasinInput
 from lucid.ir.binding import BindingInput
 from lucid.memory.dmf import load_dynamic_memory_field
 from lucid.ir.binding import CandidateFrame
@@ -23,6 +26,7 @@ from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturitySt
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
+from lucid.ir.interference import InterferenceOutput
 from lucid.ir.lucidity import SearchDirectives
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
@@ -30,6 +34,7 @@ from lucid.ir.serde import from_json, to_json
 from lucid.ir.training import Episode
 from lucid.memory.dmf import DmfTraceRecord, DynamicMemoryField
 from lucid.training.dmf import learn_from_episode
+from lucid.paths import smoke_audit_dir
 from lucid.training.orchestrator.orchestrator import (
     BlameAssigner,
     RunLog,
@@ -210,6 +215,30 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
+    print(to_json(out))
+    return 0
+
+
+def _cmd_basins(args: argparse.Namespace) -> int:
+    context_in = _bank_context_fixture()
+    context_out = run_context_op(context_in)
+    basin_input = BasinInput(
+        interference_output=InterferenceOutput(),
+        candidate_frames=context_in.binding_candidate_frames,
+        context_frames=context_out.context_frames,
+        local_basin_pressures=context_out.local_basin_pressures,
+        compute_policy=ComputePolicy(max_active_basins=args.max_active),
+    )
+    out = run_basins(
+        basin_input,
+        config=BasinsConfig(checkpoint=args.checkpoint or None, min_energy=args.min_energy),
+    )
+    write_basins_audit(
+        audit_base_dir=args.audit_dir,
+        basin_input=basin_input,
+        basin_output=out,
+        details={"checkpoint": args.checkpoint, "fixture": args.fixture},
+    )
     print(to_json(out))
     return 0
 
@@ -580,6 +609,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lucidity feedback token, e.g. SEARCH_WIDER",
     )
     context_parser.set_defaults(func=_cmd_context_op)
+
+    basins_parser = sub.add_parser("basins", help="Run basins on a built-in fixture")
+    basins_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    basins_parser.add_argument("--checkpoint", default="", help="Checkpoint with basin_bank.json")
+    basins_parser.add_argument("--max-active", type=int, default=16)
+    basins_parser.add_argument("--min-energy", type=float, default=0.15)
+    basins_parser.add_argument("--audit-dir", default=smoke_audit_dir("basins"))
+    basins_parser.set_defaults(func=_cmd_basins)
 
     projector_parser = sub.add_parser("projector", help="Run projector on a built-in fixture")
     projector_parser.add_argument("--fixture", default="grid-move", choices=["grid-move"])

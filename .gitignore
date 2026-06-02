@@ -221,6 +221,10 @@ __marimo__/
 # Local pipeline audit artifacts (per-run JSON trees)
 /audit/
 
+# Lucid train tree — local checkpoints, audits, generated data (never commit blobs)
+/train/**
+!/train/README.txt
+
 # Lucid generator output (rebuild with lucid-gen; recipes stay in git)
 data/generated/
 data/episodes/

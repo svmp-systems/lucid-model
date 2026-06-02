@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from lucid.audit.logger import resolve_run_dir
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
-from lucid.ir.basins import BasinInput, BasinOutput, CompetitionSummary
+from lucid.ir.basins import BasinInput, BasinOutput
 from lucid.ir.binding import BindingInput, BindingOutput, CandidateFrame
 from lucid.ir.common import CommitShape, DecoderMode, LucidityDecision
 from lucid.ir.context_op import ContextOpInput, ContextOpOutput
@@ -31,6 +31,7 @@ from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
 from lucid.cognition.projector import run_projector
+from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.ir.pipeline import RunContext
@@ -154,8 +155,14 @@ def interference(inp: InterferenceInput, _ctx: object) -> InterferenceOutput:
     return InterferenceOutput()
 
 
-def basins(inp: BasinInput, _ctx: object) -> BasinOutput:
-    return BasinOutput(competition_summary=CompetitionSummary())
+def basins(inp: BasinInput, ctx: object) -> BasinOutput:
+    extra = _extra_from_context(ctx)
+    return run_basins(
+        inp,
+        config=BasinsConfig(
+            checkpoint=extra.get("checkpoint") or extra.get("basins_checkpoint"),
+        ),
+    )
 
 
 def projector(inp: ProjectorInput, _ctx: object) -> ProjectorOutput:
