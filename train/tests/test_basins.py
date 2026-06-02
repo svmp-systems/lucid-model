@@ -18,7 +18,7 @@ from lucid.training import adapters
 from lucid.training.checkpoints import load_checkpoint
 from lucid.cli import main as lucid_main
 from lucid.cognition.input.perception import PerceptionConfig
-from tests.test_context_op import _bank_context_input
+from test_context_op import _bank_context_input
 
 def _bank_basin_input() -> BasinInput:
     context_out = run_context_op(_bank_context_input())
