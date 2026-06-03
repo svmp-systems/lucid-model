@@ -71,6 +71,24 @@ class LearnedInterferenceLink:
 
 
 @dataclass(slots=True)
+class InterferenceLearningPatch:
+    source_id: str
+    target_id: str
+    scope_hint: str
+    delta: float
+    reason: str
+    evidence_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class InterferenceLearningResult:
+    patches: list[InterferenceLearningPatch] = field(default_factory=list)
+    store_path: str = ""
+    audit_path: str = ""
+    audit_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class InterferenceInput:
     context_frames: list[ContextFrame]
     candidate_frames: list[CandidateFrame]

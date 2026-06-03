@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from lucid.audit.logger import summarize_stage_output
 from lucid.cli import main as lucid_cli
+from lucid.cognition.reasoning.interference_learning import (
+    learn_interference,
+    load_learned_interference_links,
+)
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.cognition.reasoning.interference import run_interference
 from lucid.ir.binding import CandidateFrame
@@ -133,3 +140,95 @@ def test_cli_runs_interference_component(capsys) -> None:
     assert "scoped_basin_energy_deltas" in captured.out
     assert "cf_event_two" in captured.out
     assert "audit_notes" in captured.out
+
+
+def test_interference_learning_persists_and_reloads_scoped_links(tmp_path: Path) -> None:
+    inp = _bank_interference_input()
+    out = run_interference(inp)
+    store_path = tmp_path / "interference_links.json"
+    audit_dir = tmp_path / "audit"
+
+    result = learn_interference(
+        inp,
+        out,
+        validation_success=True,
+        store_path=store_path,
+        audit_dir=audit_dir,
+    )
+    learned = load_learned_interference_links(store_path)
+
+    assert result.patches
+    assert store_path.exists()
+    assert Path(result.audit_path, "interference_learning.json").exists()
+    assert any(
+        link.scope_hint == "cf_event_two"
+        and {link.source_id, link.target_id} == {"t_money", "t_bank"}
+        and link.weight > 0
+        for link in learned
+    )
+
+    inp.learned_interference_links = learned
+    learned_out = run_interference(inp)
+    assert any(
+        edge.scope_frame_id == "cf_event_two"
+        and {edge.trace_id_a, edge.trace_id_b} == {"t_money", "t_bank"}
+        and edge.delta > 0
+        for edge in learned_out.trace_trace_edges
+    )
+
+
+def test_cli_runs_interference_learning_smoke(tmp_path: Path, capsys) -> None:
+    store_path = tmp_path / "store.json"
+    audit_dir = tmp_path / "audit"
+
+    exit_code = lucid_cli(
+        [
+            "interference-learn",
+            "--fixture",
+            "bank",
+            "--store",
+            str(store_path),
+            "--audit-dir",
+            str(audit_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["patches"]
+    assert store_path.exists()
+    assert Path(result["audit_path"], "README.txt").exists()
+
+    exit_code = lucid_cli(
+        [
+            "interference",
+            "--fixture",
+            "bank",
+            "--use-store",
+            "--store",
+            str(store_path),
+        ]
+    )
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert any(edge["scope_frame_id"] == "cf_event_two" for edge in out["trace_trace_edges"])
+
+
+def test_interference_learning_failure_can_weaken_local_links(tmp_path: Path) -> None:
+    inp = _bank_interference_input()
+    out = run_interference(inp)
+    store_path = tmp_path / "interference_links.json"
+
+    result = learn_interference(
+        inp,
+        out,
+        validation_success=False,
+        failure_type="interference_or_basin",
+        store_path=store_path,
+        audit_dir=tmp_path / "audit",
+    )
+    learned = load_learned_interference_links(store_path)
+
+    assert result.patches
+    assert all(patch.delta < 0 for patch in result.patches)
+    assert any(link.weight < 0 for link in learned)

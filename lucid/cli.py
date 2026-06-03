@@ -10,6 +10,12 @@ from pathlib import Path
 
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.cognition.reasoning.interference import run_interference
+from lucid.cognition.reasoning.interference_learning import (
+    DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR,
+    DEFAULT_INTERFERENCE_STORE,
+    learn_interference,
+    load_learned_interference_links,
+)
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.ir.common import Modality
@@ -162,18 +168,59 @@ def _cmd_interference(args: argparse.Namespace) -> int:
 
     context_input = _bank_context_fixture(feedback=args.feedback)
     context_output = run_context_op(context_input)
+    learned_links = load_learned_interference_links(args.store) if args.use_store else []
     out = run_interference(
-        InterferenceInput(
-            context_frames=context_output.context_frames,
-            candidate_frames=context_input.binding_candidate_frames,
-            dmf_output=context_input.dmf_output,
-            interference_gates=context_output.interference_gates,
-            scoped_trace_assignments=context_output.scoped_trace_assignments,
-            frame_links=context_output.frame_links,
-            local_basin_pressures=context_output.local_basin_pressures,
+        _bank_interference_input(
+            context_input,
+            context_output,
+            learned_interference_links=learned_links,
         )
     )
     print(to_json(out))
+    return 0
+
+
+def _bank_interference_input(
+    context_input: ContextOpInput,
+    context_output: object,
+    *,
+    learned_interference_links: list | None = None,
+) -> InterferenceInput:
+    return InterferenceInput(
+        context_frames=context_output.context_frames,
+        candidate_frames=context_input.binding_candidate_frames,
+        dmf_output=context_input.dmf_output,
+        interference_gates=context_output.interference_gates,
+        scoped_trace_assignments=context_output.scoped_trace_assignments,
+        frame_links=context_output.frame_links,
+        local_basin_pressures=context_output.local_basin_pressures,
+        learned_interference_links=learned_interference_links or [],
+    )
+
+
+def _cmd_interference_learn(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown interference learning fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    context_input = _bank_context_fixture(feedback=args.feedback)
+    context_output = run_context_op(context_input)
+    learned_links = load_learned_interference_links(args.store)
+    inp = _bank_interference_input(
+        context_input,
+        context_output,
+        learned_interference_links=learned_links,
+    )
+    out = run_interference(inp)
+    result = learn_interference(
+        inp,
+        out,
+        validation_success=args.outcome == "success",
+        failure_type=args.failure_type,
+        store_path=args.store,
+        audit_dir=args.audit_dir,
+    )
+    print(to_json(result))
     return 0
 
 
@@ -223,12 +270,56 @@ def _build_parser() -> argparse.ArgumentParser:
     interference_parser = sub.add_parser("interference", help="Run interference on a built-in fixture")
     interference_parser.add_argument("--fixture", default="bank", choices=["bank"])
     interference_parser.add_argument(
+        "--store",
+        default=str(DEFAULT_INTERFERENCE_STORE),
+        help="Path to learned interference links JSON",
+    )
+    interference_parser.add_argument(
+        "--use-store",
+        action="store_true",
+        help="Load learned links from --store before running",
+    )
+    interference_parser.add_argument(
         "--feedback",
         action="append",
         default=[],
         help="Lucidity feedback token passed through context-op first",
     )
     interference_parser.set_defaults(func=_cmd_interference)
+
+    interference_learn_parser = sub.add_parser(
+        "interference-learn",
+        help="Learn scoped interference links from a built-in fixture",
+    )
+    interference_learn_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    interference_learn_parser.add_argument(
+        "--outcome",
+        default="success",
+        choices=["success", "failure"],
+        help="Validated outcome to learn from",
+    )
+    interference_learn_parser.add_argument(
+        "--failure-type",
+        default="interference_or_basin",
+        help="Failure label used when --outcome failure",
+    )
+    interference_learn_parser.add_argument(
+        "--store",
+        default=str(DEFAULT_INTERFERENCE_STORE),
+        help="Path to learned interference links JSON",
+    )
+    interference_learn_parser.add_argument(
+        "--audit-dir",
+        default=str(DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR),
+        help="Folder for human and machine readable learning audit logs",
+    )
+    interference_learn_parser.add_argument(
+        "--feedback",
+        action="append",
+        default=[],
+        help="Lucidity feedback token passed through context-op first",
+    )
+    interference_learn_parser.set_defaults(func=_cmd_interference_learn)
 
     inspect_parser = sub.add_parser("inspect", help="Inspect audit output")
     inspect_parser.add_argument("args", nargs=argparse.REMAINDER)
