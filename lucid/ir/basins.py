@@ -21,7 +21,6 @@ class CandidateBasinState:
     scope_frame_ids: list[str] = field(default_factory=list)
     margin_vs_next: float = 0.0
     coherence_score: float = 0.0
-    heat_tier: str = "hot"
 
 
 @dataclass(slots=True)
@@ -55,7 +54,6 @@ class BasinInput:
     context_frames: list[ContextFrame]
     local_basin_pressures: list[LocalBasinPressure] = field(default_factory=list)
     basin_field_snapshot_id: str = ""
-    heat_policy: str = "standard"
     prior_basin_state: list[CandidateBasinState] = field(default_factory=list)
     compute_policy: ComputePolicy = field(default_factory=ComputePolicy)
 

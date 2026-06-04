@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lucid.ir.common import AuditEnvelope, Provenance
-from lucid.ir.pipeline import PipelineRun, RunContext, StageName, StageResult
+from lucid.ir.pipeline import PipelineRun, RunContext, StageName
 from lucid.ir.serde import from_dict, to_dict, to_json
 
 SCHEMA_VERSION = 1
@@ -77,10 +77,11 @@ def content_hash(obj: Any) -> str:
 
 
 def resolve_run_dir(base_dir: Path | str, context: RunContext) -> Path:
+    """``base_dir`` is the directory that directly contains run folders."""
     base = Path(base_dir)
     if context.session_id:
         return base / context.session_id / f"turn_{context.turn_index:04d}" / context.run_id
-    return base / "runs" / context.run_id
+    return base / context.run_id
 
 
 # --- Human summaries (embedded in JSON files) ---
@@ -187,12 +188,19 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
 
     elif stage_name == "decoder":
         refused = data.get("refused", False)
-        text = (data.get("surface_text") or "").strip()
-        lines.append(f"refused: {refused}")
-        if text:
-            preview = text[:120] + ("…" if len(text) > 120 else "")
-            lines.append(f"surface_text: {preview}")
-        headline = "refused" if refused else (text[:60] + "…" if len(text) > 60 else text or "empty")
+        grid = data.get("surface_grid")
+        if isinstance(grid, list) and grid and isinstance(grid[0], list):
+            rows = len(grid)
+            cols = len(grid[0]) if grid[0] else 0
+            lines.append(f"surface_grid: {rows}x{cols}")
+            headline = f"grid {rows}x{cols}"
+        else:
+            text = (data.get("surface_text") or "").strip()
+            lines.append(f"refused: {refused}")
+            if text:
+                preview = text[:120] + ("…" if len(text) > 120 else "")
+                lines.append(f"surface_text: {preview}")
+            headline = "refused" if refused else (text[:60] + "…" if len(text) > 60 else text or "empty")
 
     else:
         keys = ", ".join(sorted(data.keys())[:8])

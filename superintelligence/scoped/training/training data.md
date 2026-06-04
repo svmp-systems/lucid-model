@@ -122,6 +122,37 @@ The cue cloud should contain:
 weighted trace pressuresrelational pressuressoft context priorsstructural hintsambiguity policyretrieval policy
 ```
 
+### Promoted routes (current implementation)
+
+Training does not store opaque weights. It stores **routes** in checkpoint `cue_encoder_map.json`:
+
+```
+Route {
+    cue_key                   // DMF address (trace family)
+    weight
+    preserve_as_alternative   // keep competing senses alive
+    feature_pattern           // compositional feature keys for similar retrieval
+    source, episode_ids       // audit trail
+}
+```
+
+Indexes:
+
+```
+feature_index     primitive / surface / uncertainty / grid features → routes
+relation_index    reference / marker / discourse features → routes
+cue_targets[]     full gold snapshot per episode (replay / audit)
+```
+
+### Training modes
+
+| Mode | Use |
+|------|-----|
+| **calibrate** | score encoder output vs gold; add routes only for **missing** cue keys; skip when recall sufficient |
+| **seed** | bootstrap all gold routes from generator episodes into empty checkpoint |
+
+Gold source: generator `trace_activations` + spans + uncertainty + markers. Goal remains **high recall**, not top-1 collapse.
+
 Early on, you will not have mature trace IDs. So use two stages.
 
 ## Stage A: pseudo-traces

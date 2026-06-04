@@ -52,6 +52,27 @@ class TraceTarget:
 
 
 @dataclass(slots=True)
+class FrameSlotTarget:
+    slot_id: str
+    trace_family: str = ""
+    member_span_ids: list[str] = field(default_factory=list)
+    affinity_hints: dict[str, float] = field(default_factory=dict)
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class FrameTarget:
+    frame_id: str
+    frame_type: str = "event"
+    slot_targets: list[FrameSlotTarget] = field(default_factory=list)
+    # Backward-compatible debug/audit hints only. Runtime binding uses slot targets.
+    role_assignments: dict[str, str] = field(default_factory=dict)
+    member_span_ids: list[str] = field(default_factory=list)
+    unresolved_slot_names: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
 class ScopeAssignment:
     span_id: str
     primary_frame: str
@@ -81,6 +102,7 @@ class GoldLabels:
     uncertainty_flags: list[UncertaintyFlag] = field(default_factory=list)
     trace_activations: list[TraceTarget] = field(default_factory=list)
     ambiguity_policy: str = "preserve_plural"
+    frame_targets: list[FrameTarget] = field(default_factory=list)
     scope_assignments: list[ScopeAssignment] = field(default_factory=list)
     interference_gates: list[GateDirective] = field(default_factory=list)
     basin_families: list[BasinTarget] = field(default_factory=list)

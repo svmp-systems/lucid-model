@@ -6,7 +6,7 @@ import uuid
 from random import Random
 
 from lucid.ir.common import Modality, TaskIntent
-from lucid.ir.training import Episode, GoldLabels, TraceTarget
+from lucid.ir.training import Episode, FrameSlotTarget, FrameTarget, GoldLabels, TraceTarget
 from lucid.training.generator.engine import AmbiguityKnob, require_valid
 
 NAME = "grid_move"
@@ -49,6 +49,36 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
     output_grid[after[0]][after[1]] = color
 
     gold = GoldLabels(
+        frame_targets=[
+            FrameTarget(
+                frame_id="frame_position_shift",
+                frame_type="transform",
+                slot_targets=[
+                    FrameSlotTarget(
+                        "slot_before",
+                        "position_shift_like",
+                        [],
+                        {"pre_change_state_like": 0.8},
+                        0.88,
+                    ),
+                    FrameSlotTarget(
+                        "slot_after",
+                        "position_shift_like",
+                        [],
+                        {"post_change_state_like": 0.8},
+                        0.88,
+                    ),
+                    FrameSlotTarget(
+                        "slot_object",
+                        "shape_preserved_like",
+                        [],
+                        {"object_like": 0.7},
+                        0.86,
+                    ),
+                ],
+                confidence=0.88,
+            ),
+        ],
         trace_activations=[
             TraceTarget("position_shift_like", 0.88),
             TraceTarget("shape_preserved_like", 0.93),

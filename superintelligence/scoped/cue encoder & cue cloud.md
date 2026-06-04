@@ -74,7 +74,7 @@ decoder
 ```
 CueEncoderInput {
     perceptual_evidence_graph     // primary source
-    upstream_state                // optional: prior turn, working memory handles
+    upstream_state                // optional: prior turn, dmf_coverage_score, working memory
     task_intent_hint              // optional routing hint — not global classification
     retrieval_budget              // max traces to request, width, depth
     ambiguity_policy_in           // preserve | narrow | widen (from lucidity loopback)
@@ -82,6 +82,8 @@ CueEncoderInput {
     provenance
 }
 ```
+
+`upstream_state.dmf_coverage_score` (optional): when low on a prior pipeline pass, the encoder widens similar-route retrieval before DMF runs again.
 
 ---
 
@@ -121,6 +123,105 @@ floor_threshold           // drop noise below ε, but keep ambiguity bands
 
 ## Internal processing
 
+The runtime implementation is a **layered evidence compiler** — not a single neural classifier. Each layer stays auditable; learned knowledge lives in checkpoint **routes**, not opaque weights.
+
+```
+PerceptualEvidenceGraph
+        ↓
+[L0] Evidence compiler        rule-based feature keys from units, markers, relations, uncertainty, grid changes
+        ↓
+[L1] Structural routes        deterministic relation / grid / marker compilation
+        ↓
+[L2] Promoted route retrieval exact + similar match over checkpoint feature_index / relation_index
+        ↓
+[L3] Merge + widen + budget     dedupe, keep_alive, widen on weak coverage, cap by retrieval_budget
+        ↓
+CueCloud → DMF
+```
+
+Implementation: `lucid/cognition/input/cue/encoder.py`
+Checkpoint store: `cue_encoder_map.json` (`feature_index`, `relation_index`, `cue_targets`)
+CLI: `lucid cue-encoder`, `lucid train cue_encoder`
+
+### L0 — Evidence compiler (rules)
+
+Perception nodes compile to typed **feature keys** used for routing and audit:
+
+```
+surface:bank
+kind:noun
+uncertainty:polysemy:surface:bank
+reference:object_carryover
+change:position_shift
+grid:shape_preserved
+marker_surface:while
+```
+
+Feature keys are compositional — paraphrases that share structure can match the same promoted route even when surface tokens differ.
+
+Stop-word surfaces (`the`, `it`, `in`) do not emit primitive cues by default; they remain available as **learned-only** features so promoted routes can still fire when trained.
+
+### L1 — Structural routes (rules, no checkpoint)
+
+Always-on compilation:
+
+```
+while marker     → temporal_subordinate (relational)
+object_carryover → relational activation with endpoints
+position_shift   → position_shift_like + preserved-shape/color hints when applicable
+uncertainty flag → preserve_plural ambiguity policy
+```
+
+### L2 — Promoted route retrieval (checkpoint)
+
+Training stores **routes** in the checkpoint — inspectable records, not embedding blobs:
+
+```
+Route {
+    cue_key                      // trace-family address for DMF (e.g. river_location_like)
+    weight
+    preserve_as_alternative      // keep_alive for ambiguity
+    feature_pattern              // list of feature keys this route applies to
+    source                       // episode_gold | calibrate_missing_route
+    episode_ids                  // promotion audit trail
+}
+```
+
+Retrieval order per pass:
+
+1. **Exact match** — feature key hits `feature_index` / `relation_index`
+2. **Similar match** — overlap between live evidence feature bitset and stored `feature_pattern` (popcount-style score, top-k)
+3. **Widen match** — lower overlap threshold when coverage is weak (see L3)
+
+Every applied route still cites `evidence_refs` back to perception nodes.
+
+### L3 — Merge, widen, budget
+
+Before emitting `CueCloud`:
+
+```
+merge rule cues + retrieved routes
+respect keep_alive on ambiguous targets
+drop below floor_threshold
+select top-k primitive + relational activations within retrieval_budget
+```
+
+**Widen** when any of:
+
+```
+ambiguity_policy_in == force_widen          // lucidity SEARCH_WIDER loopback
+upstream_state.dmf_coverage_score < threshold
+actionable feature coverage < threshold     // rules did not cover enough evidence
+```
+
+Widen increases budget, lowers similarity overlap threshold, and pulls additional promoted routes — still plural hypotheses, not a forced winner.
+
+Audit extras on `CueCloud.provenance.extra.cue_encoder`:
+
+```
+feature_coverage, exact_route_hits, similar_route_hits, widen_applied, prior_dmf_coverage
+```
+
 ### 1. Evidence → activation mapping
 
 Map surface evidence to **learned trace families** without naming human concepts internally:
@@ -129,9 +230,10 @@ Map surface evidence to **learned trace families** without naming human concepts
 noun_span "bank"     → activate competing trace clusters (not one winner)
 change: position_shift → activate motion-like trace families
 region: legend_band  → activate symbol-region trace families (soft)
+promoted route       → e.g. river_location_like when feature_pattern matches
 ```
 
-Human aliases (`BANK`, `MOVE_LEFT`) may exist for debugging; runtime uses `t####` only.
+Human aliases (`BANK`, `MOVE_LEFT`) may exist for debugging; runtime uses `t####` or trace-family keys as DMF addresses.
 
 ### 2. Relational compilation
 
@@ -169,6 +271,53 @@ retrieval_budget {
 ```
 
 Wide clouds cost more; lucidity and training governor feed back when widening was necessary.
+
+---
+
+## Training
+
+Cue encoder training is **route promotion** — not end-to-end backprop. It writes auditable entries into `cue_encoder_map.json` inside the shared checkpoint.
+
+### Modes
+
+| Mode | Command | Behavior |
+|------|---------|----------|
+| **calibrate** (default) | `lucid train cue_encoder --mode calibrate` | Run encoder on episode perception; measure recall vs generator gold; **patch only missing routes**; `NO_UPDATE` when recall already sufficient |
+| **seed** | `lucid train cue_encoder --mode seed` | Store all gold cue targets and routes from episode (bootstrap / corpus fill) |
+
+Both modes write human-readable step audits under `audit/training/cue_encoder_*`.
+
+### Calibrate loop (Mode A)
+
+```
+episode perception → encode_cues(checkpoint)
+compare emitted cue keys vs gold trace_activations
+if recall sufficient → NO_UPDATE (governor-friendly)
+else → upsert smallest missing routes into feature_index / relation_index
+```
+
+Recall metric: `measure_cue_recall(cloud, gold_families)` — missing gold families block promotion until patched.
+
+### What gets stored
+
+```
+cue_targets[]           full gold snapshot per episode (audit / replay)
+feature_index{}         primitive routes keyed by feature_key + feature_pattern
+relation_index{}        relational routes (object_carryover, temporal_subordinate, marker types, …)
+```
+
+Routes accumulate `seen_count` and `episode_ids` on repeat promotion.
+
+### Training integration
+
+| System | Role |
+|--------|------|
+| **Generator** | supplies gold `trace_activations`, spans, uncertainty, markers |
+| **Training orchestrator** | blame `cue_encoder_or_DMF` when evidence exists but traces fail; `CueEncoderPatch` promotes routes via same checkpoint |
+| **Governor** | skip updates on high-margin success; shadow-test before promote |
+| **Scaling observatory** | log `module_under_test=cue_encoder`, training_mode=calibrate |
+
+Do **not** train cue encoder to collapse ambiguity. Gold must include `keep_alive` / competing trace families where polysemy matters.
 
 ---
 
@@ -265,15 +414,18 @@ GOOD: trace: t2931 (alias optional in debug tooling)
 
 ---
 
-## Loopback from lucidity
+## Loopback from lucidity and DMF
 
 When lucidity returns `SEARCH_WIDER` or `RECHECK_BINDING`:
 
 ```
 increase retrieval_budget
 force_widen ambiguity_policy
+re-compile cue cloud with widen path (lower route overlap threshold)
 optionally re-compile from edited perception graph
 ```
+
+When a prior pass produced low DMF `coverage_score`, the orchestrator passes it in `upstream_state` so the next cue pass widens before DMF runs again.
 
 When lucidity returns high margin pass on prior pass:
 
@@ -286,9 +438,11 @@ allow_narrow may reduce redundant activations next cycle
 ## Summary
 
 ```
-Cue encoder = trace-address compiler
-Input:     PerceptualEvidenceGraph + policy + budget
+Cue encoder = layered trace-address compiler
+Input:     PerceptualEvidenceGraph + policy + budget + optional upstream coverage
+Layers:    evidence features → structural rules → promoted routes → merge/widen/budget
 Output:    CueCloud / CuePacket (sparse activation hypergraph)
+Train:     calibrate (patch missing routes) | seed (bootstrap all gold)
 Principle: these meanings deserve to compete — not this is the meaning
 Next:      DMF returns activation landscape (traces, clusters, margins)
 Never:     final interpretation, role binding, basin choice, decoder output

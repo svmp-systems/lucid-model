@@ -15,6 +15,44 @@ from lucid.cognition.orchestrator.stages import FunctionStage
 from lucid.cognition.orchestrator.stub_stages import build_default_stage_fns
 
 
+def test_orchestrator_dmf_activates_traces_from_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    train_exit = lucid_cli(
+        [
+            "train",
+            "dmf",
+            "--fixture",
+            "bank",
+            "--checkpoint",
+            str(checkpoint),
+            "--audit-dir",
+            str(tmp_path / "train-audit"),
+            "--steps",
+            "1",
+        ]
+    )
+    assert train_exit == 0
+
+    episode = Episode(
+        episode_id="ep-dmf",
+        modality=Modality.TEXT,
+        raw_input="I found money while kayaking and placed it in the bank.",
+        seed=1,
+    )
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=str(tmp_path / "audit"),
+            perception=PerceptionConfig(backend="rule"),
+            checkpoint=str(checkpoint),
+        )
+    )
+    run = runner.run_episode(episode)
+
+    assert run.dmf_output is not None
+    assert run.dmf_output.active_traces or run.dmf_output.novelty_signals
+    assert run.dmf_output.audit_log.get("tracebank_size", 0) >= 1
+
+
 def test_orchestrator_runs_and_writes_audit(tmp_path: Path) -> None:
     episode = Episode(
         episode_id="ep-1",
@@ -61,7 +99,7 @@ def test_failed_stage_writes_partial_audit(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="stage dmf failed"):
         runner.run_episode(episode)
 
-    run_dirs = list((tmp_path / "runs").iterdir())
+    run_dirs = [p for p in tmp_path.iterdir() if p.is_dir() and (p / "manifest.json").is_file()]
     assert len(run_dirs) == 1
     manifest = json.loads((run_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
     assert [stage["stage_name"] for stage in manifest["stages"]] == [
@@ -141,8 +179,14 @@ def test_cli_accepts_pretty_json_with_bom(tmp_path: Path) -> None:
     )
 
     assert exit_code == 0
-    assert list((tmp_path / "audit" / "runs").iterdir())
-
+    audit_runs = [
+        p
+        for p in (tmp_path / "audit").iterdir()
+        if p.is_dir() and (p / "manifest.json").is_file()
+    ]
+    assert len(audit_runs) == 1
+    assert audit_runs[0].name.startswith("20")
+    assert "ep-cli" in audit_runs[0].name
 
 def test_cli_runs_perception_component(capsys) -> None:
     exit_code = lucid_cli(["perceive", "go to the bank", "--backend", "rule", "--compact"])
@@ -208,4 +252,3 @@ def test_llm_perception_audit_is_linked_from_stage_audit(monkeypatch, tmp_path: 
     assert detail_audit["stage_name"] == "perception_llm"
     assert detail_audit["output"]["attempts"][0]["raw_response"]
     assert detail_audit["output"]["graph"]["candidate_units"][0]["surface"] == "bank"
-

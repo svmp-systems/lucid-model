@@ -10,6 +10,8 @@ from lucid.ir.perception import UncertaintyFlag
 from lucid.ir.training import (
     BasinTarget,
     Episode,
+    FrameSlotTarget,
+    FrameTarget,
     GoldLabels,
     GoldSpan,
     ScopeAssignment,
@@ -94,6 +96,72 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
             TraceTarget("outdoor_context_like", outdoor_weight, "context", False),
         ],
         ambiguity_policy=policy,
+        frame_targets=[
+            FrameTarget(
+                frame_id="event_one",
+                frame_type="event",
+                slot_targets=[
+                    FrameSlotTarget(
+                        "slot_find",
+                        "financial_action_like",
+                        ["find"],
+                        {"event_anchor_like": 0.8},
+                        0.76,
+                    ),
+                    FrameSlotTarget(
+                        "slot_theme",
+                        "financial_action_like",
+                        ["theme"],
+                        {"object_like": 0.8},
+                        0.76,
+                    ),
+                    *(
+                        [
+                            FrameSlotTarget(
+                                "slot_context",
+                                "outdoor_context_like",
+                                ["context"],
+                                {"context_like": 0.8},
+                                0.72,
+                            )
+                        ]
+                        if context
+                        else []
+                    ),
+                ],
+                unresolved_slot_names=[],
+                confidence=0.76,
+            ),
+            FrameTarget(
+                frame_id="event_two",
+                frame_type="event",
+                slot_targets=[
+                    FrameSlotTarget(
+                        "slot_deposit",
+                        "financial_action_like",
+                        ["deposit"],
+                        {"event_anchor_like": 0.8},
+                        0.74,
+                    ),
+                    FrameSlotTarget(
+                        "slot_location",
+                        "river_location_like",
+                        ["location"],
+                        {"location_like": 0.8},
+                        0.74,
+                    ),
+                    FrameSlotTarget(
+                        "slot_theme_carryover",
+                        "financial_action_like",
+                        ["theme"],
+                        {"object_like": 0.65},
+                        0.68,
+                    ),
+                ],
+                unresolved_slot_names=["bank_sense"] if river_weight > 0.2 and location == "bank" else [],
+                confidence=0.74,
+            ),
+        ],
         scope_assignments=[
             ScopeAssignment("find", "event_one"),
             *([ScopeAssignment("context", "event_one")] if context else []),

@@ -14,8 +14,12 @@ from lucid.ir.perception import PerceptualEvidenceGraph
 class CandidateFrame:
     frame_id: str
     frame_type: str  # word_sense | event | relation | rule | transform | ...
+    # Anonymous slot_id -> trace_id bindings. Human role names belong in audit hints,
+    # not in the binding contract.
     role_assignments: dict[str, str] = field(default_factory=dict)
     relation_assignments: dict[str, str] = field(default_factory=dict)
+    slot_evidence_refs: dict[str, list[str]] = field(default_factory=dict)
+    slot_affinity_hints: dict[str, dict[str, float]] = field(default_factory=dict)
     member_evidence_refs: list[str] = field(default_factory=list)
     confidence: float = 0.0
     unresolved_slot_names: list[str] = field(default_factory=list)

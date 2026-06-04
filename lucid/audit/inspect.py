@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -48,9 +49,15 @@ def print_run(run_dir: Path | str, *, stage: str | None = None) -> None:
         return
 
     for ref in manifest.stages:
-        record = logger.load_stage_record(run_path, ref.stage_name)
+        stage_key = ref.stage_name if ref.occurrence <= 1 else f"{ref.stage_name}#{ref.occurrence}"
+        file_name = (
+            f"{ref.stage_name}.json"
+            if ref.occurrence <= 1
+            else f"{ref.stage_name}_{ref.occurrence:02d}.json"
+        )
+        record = json.loads((run_path / file_name).read_text(encoding="utf-8"))
         summary = record.get("summary") or {}
-        print(f"--- {ref.stage_name}: {summary.get('headline', '')} ---")
+        print(f"--- {stage_key}: {summary.get('headline', '')} ---")
         for line in summary.get("lines", []):
             print(f"  {line}")
         print()
