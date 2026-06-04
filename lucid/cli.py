@@ -10,7 +10,9 @@ from pathlib import Path
 
 from lucid.audit.basins import write_basins_audit
 from lucid.audit.decoder import write_decoder_audit
+from lucid.audit.lucidity import write_lucidity_audit
 from lucid.cognition.decoder import run_decoder
+from lucid.cognition.lucidity import run_lucidity
 from lucid.audit.cue import write_cue_encoder_audit
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
@@ -19,26 +21,36 @@ from lucid.cognition.projector import run_projector
 from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.cognition.reasoning.interference import run_interference
+from lucid.cognition.reasoning.interference_learning import (
+    DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR,
+    DEFAULT_INTERFERENCE_STORE,
+    learn_interference,
+    load_learned_interference_links,
+)
 from lucid.audit.binding import write_binding_audit
 from lucid.ir.basins import BasinInput
-from lucid.ir.binding import BindingInput
+from lucid.ir.binding import BindingInput, BindingOutput
 from lucid.memory.dmf import load_dynamic_memory_field
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
-from lucid.ir.interference import InterferenceOutput
+from lucid.ir.basins import BasinOutput, CandidateBasinState, CompetitionSummary
 from lucid.ir.common import DecoderMode, LucidityDecision
 from lucid.ir.expression import DecoderInput
+from lucid.ir.interference import InterferenceInput, InterferenceOutput
 from lucid.ir.lucidity import (
     DecoderPolicy,
+    LucidityInput,
     LucidityOutput,
     LucidityRenderPacket,
     RenderUnit,
     SearchDirectives,
     SourceRef,
 )
+from lucid.ir.projector import ProjectorOutput
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
 from lucid.ir.serde import from_json, to_json
@@ -56,6 +68,7 @@ from lucid.paths import (
     DEFAULT_AUDIT_BINDING,
     DEFAULT_AUDIT_CUE_ENCODER,
     DEFAULT_AUDIT_DMF,
+    DEFAULT_AUDIT_LUCIDITY,
     DEFAULT_AUDIT_RUNS,
     smoke_audit_dir,
 )
@@ -232,6 +245,148 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
+    print(to_json(out))
+    return 0
+
+
+def _bank_interference_input(
+    context_input: ContextOpInput,
+    context_output: object,
+    *,
+    learned_interference_links: list | None = None,
+) -> InterferenceInput:
+    return InterferenceInput(
+        context_frames=context_output.context_frames,
+        candidate_frames=context_input.binding_candidate_frames,
+        dmf_output=context_input.dmf_output,
+        interference_gates=context_output.interference_gates,
+        scoped_trace_assignments=context_output.scoped_trace_assignments,
+        frame_links=context_output.frame_links,
+        local_basin_pressures=context_output.local_basin_pressures,
+        learned_interference_links=learned_interference_links or [],
+    )
+
+
+def _cmd_interference(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown interference fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    context_input = _bank_context_fixture(feedback=args.feedback)
+    context_output = run_context_op(context_input)
+    learned_links = load_learned_interference_links(args.store) if args.use_store else []
+    out = run_interference(
+        _bank_interference_input(
+            context_input,
+            context_output,
+            learned_interference_links=learned_links,
+        )
+    )
+    print(to_json(out))
+    return 0
+
+
+def _cmd_interference_learn(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown interference learning fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    context_input = _bank_context_fixture(feedback=args.feedback)
+    context_output = run_context_op(context_input)
+    learned_links = load_learned_interference_links(args.store)
+    inp = _bank_interference_input(
+        context_input,
+        context_output,
+        learned_interference_links=learned_links,
+    )
+    out = run_interference(inp)
+    result = learn_interference(
+        inp,
+        out,
+        validation_success=args.outcome == "success",
+        failure_type=args.failure_type,
+        store_path=args.store,
+        audit_dir=args.audit_dir,
+    )
+    print(to_json(result))
+    return 0
+
+
+def _lucidity_bank_input(*, pass_kind: str, checkpoint: str) -> LucidityInput:
+    context_in = _bank_context_fixture()
+    context_out = run_context_op(context_in)
+    interference_out = run_interference(_bank_interference_input(context_in, context_out))
+    basin_input = BasinInput(
+        interference_output=interference_out,
+        candidate_frames=context_in.binding_candidate_frames,
+        context_frames=context_out.context_frames,
+        local_basin_pressures=context_out.local_basin_pressures,
+    )
+    basin_out = run_basins(basin_input, config=BasinsConfig(checkpoint=checkpoint or None))
+    return LucidityInput(
+        basin_output=basin_out,
+        binding_output=BindingOutput(
+            candidate_frames=context_in.binding_candidate_frames,
+            binding_stability_score=0.72,
+        ),
+        context_op_output=context_out,
+        interference_output=interference_out,
+        dmf_output=context_in.dmf_output,
+        perceptual_evidence_graph=context_in.perceptual_evidence_graph,
+        task_intent="answer",
+        risk_level="medium",
+        pass_kind=pass_kind,
+    )
+
+
+def _lucidity_grid_input(*, pass_kind: str, projection: ProjectorOutput | None) -> LucidityInput:
+    context_out = run_context_op(_bank_context_fixture())
+    interference_out = InterferenceOutput()
+    basin_out = BasinOutput(
+        candidate_basin_states=[
+            CandidateBasinState(basin_id="b_move", energy=0.9, margin_vs_next=0.03),
+            CandidateBasinState(basin_id="b_alt", energy=0.5, margin_vs_next=0.0),
+        ],
+        competition_summary=CompetitionSummary(
+            top_basin_id="b_move",
+            second_basin_id="b_alt",
+            top_margin=0.03,
+            active_basin_count=2,
+        ),
+    )
+    return LucidityInput(
+        basin_output=basin_out,
+        binding_output=BindingOutput(candidate_frames=[], binding_stability_score=0.8),
+        context_op_output=context_out,
+        interference_output=interference_out,
+        dmf_output=DmfOutput(coverage_score=0.9),
+        perceptual_evidence_graph=PerceptualEvidenceGraph(),
+        task_intent="solve_grid",
+        risk_level="high",
+        pass_kind=pass_kind,
+        projection_output=projection,
+    )
+
+
+def _cmd_lucidity(args: argparse.Namespace) -> int:
+    if args.fixture == "bank":
+        inp = _lucidity_bank_input(pass_kind=args.pass_kind, checkpoint=args.checkpoint)
+    elif args.fixture == "grid":
+        projection = None
+        if args.pass_kind == "final_check":
+            projection = run_projector(_grid_move_projector_fixture(args.max_rollouts))
+        inp = _lucidity_grid_input(pass_kind=args.pass_kind, projection=projection)
+    else:
+        print(f"unknown lucidity fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    out = run_lucidity(inp)
+    write_lucidity_audit(
+        audit_base_dir=args.audit_dir,
+        lucidity_input=inp,
+        lucidity_output=out,
+        details={"fixture": args.fixture, "pass_kind": args.pass_kind},
+    )
     print(to_json(out))
     return 0
 
@@ -739,6 +894,60 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     context_parser.set_defaults(func=_cmd_context_op)
 
+    interference_parser = sub.add_parser("interference", help="Run interference on a built-in fixture")
+    interference_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    interference_parser.add_argument(
+        "--store",
+        default=str(DEFAULT_INTERFERENCE_STORE),
+        help="Path to learned interference links JSON",
+    )
+    interference_parser.add_argument(
+        "--use-store",
+        action="store_true",
+        help="Load learned links from --store before running",
+    )
+    interference_parser.add_argument(
+        "--feedback",
+        action="append",
+        default=[],
+        help="Lucidity feedback token passed through context-op first",
+    )
+    interference_parser.set_defaults(func=_cmd_interference)
+
+    interference_learn_parser = sub.add_parser(
+        "interference-learn",
+        help="Learn scoped interference links from a built-in fixture",
+    )
+    interference_learn_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    interference_learn_parser.add_argument(
+        "--outcome",
+        default="success",
+        choices=["success", "failure"],
+        help="Validated outcome to learn from",
+    )
+    interference_learn_parser.add_argument(
+        "--failure-type",
+        default="interference_or_basin",
+        help="Failure label used when --outcome failure",
+    )
+    interference_learn_parser.add_argument(
+        "--store",
+        default=str(DEFAULT_INTERFERENCE_STORE),
+        help="Path to learned interference links JSON",
+    )
+    interference_learn_parser.add_argument(
+        "--audit-dir",
+        default=str(DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR),
+        help="Folder for human and machine readable learning audit logs",
+    )
+    interference_learn_parser.add_argument(
+        "--feedback",
+        action="append",
+        default=[],
+        help="Lucidity feedback token passed through context-op first",
+    )
+    interference_learn_parser.set_defaults(func=_cmd_interference_learn)
+
     basins_parser = sub.add_parser("basins", help="Run basins on a built-in fixture")
     basins_parser.add_argument("--fixture", default="bank", choices=["bank"])
     basins_parser.add_argument("--checkpoint", default="", help="Checkpoint with basin_bank.json")
@@ -746,6 +955,18 @@ def _build_parser() -> argparse.ArgumentParser:
     basins_parser.add_argument("--min-energy", type=float, default=0.15)
     basins_parser.add_argument("--audit-dir", default=smoke_audit_dir("basins"))
     basins_parser.set_defaults(func=_cmd_basins)
+
+    lucidity_parser = sub.add_parser("lucidity", help="Run lucidity gate on a built-in fixture")
+    lucidity_parser.add_argument("--fixture", default="bank", choices=["bank", "grid"])
+    lucidity_parser.add_argument(
+        "--pass-kind",
+        default="pre_check",
+        choices=["pre_check", "final_check", "recheck"],
+    )
+    lucidity_parser.add_argument("--checkpoint", default="", help="Checkpoint for basin bank")
+    lucidity_parser.add_argument("--max-rollouts", type=int, default=1)
+    lucidity_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_LUCIDITY)
+    lucidity_parser.set_defaults(func=_cmd_lucidity)
 
     decoder_parser = sub.add_parser("decoder", help="Render a lucidity script into chat text")
     decoder_parser.add_argument("--fixture", default="bank", choices=["bank", "plural"])

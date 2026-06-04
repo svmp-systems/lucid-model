@@ -129,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     check_p.add_argument("path")
     check_p.set_defaults(func=cmd_check)
 
+    validate_p = sub.add_parser("validate", help="alias for check")
+    validate_p.add_argument("path")
+    validate_p.set_defaults(func=cmd_check)
+
     sum_p = sub.add_parser("summary", help="summarize an episode file")
     sum_p.add_argument("path")
     sum_p.set_defaults(func=cmd_summary)

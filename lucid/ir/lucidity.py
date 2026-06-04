@@ -1,4 +1,4 @@
-"""Layer 5 — lucidity gate, committed state, checks."""
+﻿"""Layer 5 — lucidity gate, committed state, checks."""
 
 from __future__ import annotations
 
@@ -89,6 +89,44 @@ class SourceRef:
 
 
 @dataclass(slots=True)
+class CommittedState:
+    commit_id: str
+    commit_shape: CommitShape = CommitShape.SINGLE
+    primary_basin_id: str = ""
+    assembly_ids: list[str] = field(default_factory=list)
+    member_basin_ids: list[str] = field(default_factory=list)
+    frame_commits: list[FrameCommit] = field(default_factory=list)
+    rollout_steps: list[RolloutStep] = field(default_factory=list)
+    claims: list[StructuredClaim] = field(default_factory=list)
+    render_units: list[RenderUnit] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+    projection_artifact: dict[str, Any] = field(default_factory=dict)
+    provenance_chain: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PreservedHypothesis:
+    hypothesis_id: str
+    frame_id: str = ""
+    basin_id: str = ""
+    narrative_hint: str = ""
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class SearchDirectives:
+    search_target: SearchTarget = SearchTarget.ALL
+    cue_budget_multiplier: float = 1.0
+    allow_new_frames: bool = False
+    projector_targets: list[str] = field(default_factory=list)
+    max_rollouts: int = 0
+    rollout_mode: str = "none"  # none | single_step | multi_step
+    rollout_depth: int = 0
+    rebind_frame_ids: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RenderUnit:
     unit_id: str
     unit_type: str  # claim | frame_summary | alternative | caveat | artifact | action
@@ -141,44 +179,6 @@ class LucidityRenderPacket:
 
 
 @dataclass(slots=True)
-class CommittedState:
-    commit_id: str
-    commit_shape: CommitShape = CommitShape.SINGLE
-    primary_basin_id: str = ""
-    assembly_ids: list[str] = field(default_factory=list)
-    member_basin_ids: list[str] = field(default_factory=list)
-    frame_commits: list[FrameCommit] = field(default_factory=list)
-    rollout_steps: list[RolloutStep] = field(default_factory=list)
-    claims: list[StructuredClaim] = field(default_factory=list)
-    unresolved: list[str] = field(default_factory=list)
-    render_units: list[RenderUnit] = field(default_factory=list)
-    projection_artifact: dict[str, Any] = field(default_factory=dict)
-    provenance_chain: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class PreservedHypothesis:
-    hypothesis_id: str
-    frame_id: str = ""
-    basin_id: str = ""
-    narrative_hint: str = ""
-    confidence: float = 0.0
-
-
-@dataclass(slots=True)
-class SearchDirectives:
-    search_target: SearchTarget = SearchTarget.ALL
-    cue_budget_multiplier: float = 1.0
-    allow_new_frames: bool = False
-    projector_targets: list[str] = field(default_factory=list)
-    max_rollouts: int = 0
-    rollout_mode: str = "none"  # none | single_step | multi_step
-    rollout_depth: int = 0
-    rebind_frame_ids: list[str] = field(default_factory=list)
-    extra: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
 class DecoderPolicy:
     mode: str  # DecoderMode value
     forbid_single_answer: bool = False
@@ -223,9 +223,9 @@ class LucidityOutput:
     check_results: LucidityCheckResults = field(default_factory=LucidityCheckResults)
     confidence_summary: ConfidenceSummary = field(default_factory=ConfidenceSummary)
     committed_state: CommittedState | None = None
-    render_packet: LucidityRenderPacket | None = None
     preserved_hypotheses: list[PreservedHypothesis] = field(default_factory=list)
     search_directives: SearchDirectives | None = None
+    render_packet: LucidityRenderPacket | None = None
     secondary_decisions: list[LucidityDecision] = field(default_factory=list)
     audit_notes: list[str] = field(default_factory=list)
     provenance: Provenance = field(default_factory=Provenance)

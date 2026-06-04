@@ -31,10 +31,10 @@ STORY_PAIRS = [
         "themes": ["an old coin", "a carved stone", "a glass bottle"],
     },
     {
-        "agent": "Jamie",
-        "e1": ("spotted", "her", "in the park"),
-        "e2": ("recognised", "her", "from the photo"),
-        "themes": ["the woman", "the girl", "the stranger"],
+        "agent": "Sam",
+        "e1": ("met", "them", "in the park"),
+        "e2": ("called", "them", "after the show"),
+        "themes": ["the band", "the crew", "the team"],
     },
     {
         "agent": "they",

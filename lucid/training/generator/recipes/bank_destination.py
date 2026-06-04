@@ -12,6 +12,7 @@ from lucid.ir.training import (
     Episode,
     FrameSlotTarget,
     FrameTarget,
+    GateDirective,
     GoldLabels,
     GoldSpan,
     ScopeAssignment,
@@ -169,6 +170,25 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
             ScopeAssignment("location", "event_two"),
             ScopeAssignment("theme", "event_one", ["event_two"]),
         ],
+        interference_gates=(
+            [
+                GateDirective(
+                    gate_id="keep_outdoor_context_local",
+                    scope_frame_id="event_two",
+                    allowed_trace_ids=["financial_action_like", "river_location_like"],
+                    blocked_trace_ids=["outdoor_context_like"],
+                ),
+            ]
+            if context
+            else [
+                GateDirective(
+                    gate_id="scope_bank_sense_to_deposit",
+                    scope_frame_id="event_two",
+                    allowed_trace_ids=["financial_action_like", "river_location_like"],
+                    blocked_trace_ids=[],
+                ),
+            ]
+        ),
         basin_families=[
             BasinTarget("financial_destination", "event_two", money_weight),
             BasinTarget("river_destination", "event_two", river_weight),
