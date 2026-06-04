@@ -7,7 +7,10 @@ from random import Random
 
 from lucid.ir.common import Modality, TaskIntent
 from lucid.ir.training import (
+    BasinTarget,
     Episode,
+    FrameSlotTarget,
+    FrameTarget,
     GateDirective,
     GoldLabels,
     GoldMarker,
@@ -51,6 +54,10 @@ EXAMPLES = [
 
 def make(rng: Random, knob: AmbiguityKnob) -> Episode:
     example = rng.choice(EXAMPLES)
+    target = example["target"]
+    leak_weight = round(max(0.05, 0.4 - knob.level * 0.35), 3)
+    scope_weight = round(0.55 + knob.level * 0.35, 3)
+    lucidity = "COMMIT" if scope_weight > 0.6 else "PRESERVE_AMBIGUITY"
 
     gold = GoldLabels(
         spans=[
@@ -61,28 +68,57 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
             GoldMarker("scope_marker", example["scope_word"], ["scope_limiter"]),
         ],
         regions=[
-            GoldRegion(example["target"], "target", ["instruction"]),
+            GoldRegion(target, "target", ["instruction", "scope"]),
             GoldRegion("everything_else", "protected", []),
         ],
         trace_activations=[
-            TraceTarget("scoped_instruction", 0.9, "instruction", True),
-            TraceTarget("global_leak_risk", max(0.05, 0.4 - knob.level * 0.35), "", False),
+            TraceTarget("scoped_instruction", scope_weight, "instruction", True),
+            TraceTarget("global_leak_risk", leak_weight, "", leak_weight > 0.15),
+        ],
+        frame_targets=[
+            FrameTarget(
+                frame_id=target,
+                frame_type="instruction_scope",
+                slot_targets=[
+                    FrameSlotTarget(
+                        "slot_instruction",
+                        "scoped_instruction",
+                        ["instruction"],
+                        {"instruction_like": 0.9},
+                        scope_weight,
+                    ),
+                    FrameSlotTarget(
+                        "slot_scope",
+                        "scoped_instruction",
+                        ["scope"],
+                        {"scope_limiter_like": 0.85},
+                        scope_weight - 0.05,
+                    ),
+                ],
+                member_span_ids=["instruction", "scope"],
+                confidence=scope_weight,
+            ),
         ],
         scope_assignments=[
-            ScopeAssignment("instruction", example["target"]),
-            ScopeAssignment("scope", example["target"]),
+            ScopeAssignment("instruction", target),
+            ScopeAssignment("scope", target),
         ],
         interference_gates=[
             GateDirective(
                 gate_id="no_scope_leak",
-                scope_frame_id=example["target"],
+                scope_frame_id=target,
                 allowed_trace_ids=["scoped_instruction"],
-                blocked_trace_ids=["global_leak_risk"],
+                blocked_trace_ids=["global_leak_risk"] if leak_weight > 0.08 else [],
             ),
         ],
-        lucidity_target="COMMIT",
-        lucidity_rationale="instruction bound to scoped region only",
-        expected_answer={"action": example["action"], "target": example["target"]},
+        basin_families=[BasinTarget("scoped_edit", target, scope_weight)],
+        lucidity_target=lucidity,
+        lucidity_rationale=(
+            "instruction bound to scoped region only"
+            if lucidity == "COMMIT"
+            else "global leak risk still elevated"
+        ),
+        expected_answer={"action": example["action"], "target": target},
         validator_result=True,
     )
 
@@ -93,7 +129,7 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
         raw_input=example["text"],
         gold=gold,
         validator="scope_consistency",
-        meta={"recipe": NAME, "target": example["target"], "ambiguity_level": knob.level},
+        meta={"recipe": NAME, "target": target, "ambiguity_level": knob.level},
         task_intent=TaskIntent.ANSWER,
     )
     require_valid(episode)
