@@ -330,6 +330,9 @@ class OrchestratorRunner:
                 candidate_frames=run.binding_output.candidate_frames,
                 dmf_output=run.dmf_output,
                 interference_gates=run.context_op_output.interference_gates,
+                scoped_trace_assignments=run.context_op_output.scoped_trace_assignments,
+                frame_links=run.context_op_output.frame_links,
+                local_basin_pressures=run.context_op_output.local_basin_pressures,
             )
             run.interference_output = self._run_stage(
                 StageName.INTERFERENCE.value,

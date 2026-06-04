@@ -34,7 +34,12 @@ from lucid.ir.context_op import ContextOpInput, ContextOpOutput, ContextFrame
 from lucid.ir.cue import CueCloud, CueEncoderInput
 from lucid.ir.dmf import DmfInput, DmfOutput
 from lucid.ir.expression import DecoderInput, DecoderOutput
-from lucid.ir.interference import InterferenceConflictReport, InterferenceInput, InterferenceOutput
+from lucid.ir.interference import (
+    InterferenceInput,
+    InterferenceLearningPatch,
+    InterferenceLearningResult,
+    InterferenceOutput,
+)
 from lucid.ir.lucidity import (
     CommittedState,
     DecoderPolicy,
@@ -77,7 +82,8 @@ __all__ = [
     "FrameTarget",
     "GoldLabels",
     "InterferenceInput",
-    "InterferenceConflictReport",
+    "InterferenceLearningPatch",
+    "InterferenceLearningResult",
     "InterferenceOutput",
     "LucidityDecision",
     "LucidityInput",

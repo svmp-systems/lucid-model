@@ -10,11 +10,7 @@ from lucid.ir.binding import BindingOutput, CandidateFrame
 from lucid.ir.common import LucidityDecision, TaskIntent
 from lucid.ir.context_op import ContextFrame, ContextOpOutput, InterferenceGate
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfOutput
-from lucid.ir.interference import (
-    FrameBasinEdge,
-    InterferenceConflictReport,
-    InterferenceOutput,
-)
+from lucid.ir.interference import ConflictReport, FrameBasinEdge, InterferenceOutput
 from lucid.ir.lucidity import LucidityInput
 from lucid.ir.perception import CandidateUnit, PerceptualEvidenceGraph
 from lucid.ir.lucidity import SearchDirectives
@@ -132,12 +128,11 @@ def test_interference_conflict_report_blocks_commit() -> None:
     inp.binding_output.binding_stability_score = 0.9
     inp.interference_output = InterferenceOutput(
         conflict_reports=[
-            InterferenceConflictReport(
-                report_id="ic_bank_scope",
+            ConflictReport(
+                scope_frame_id="ctx_two",
                 conflict_type="scope_leak",
+                members=["t_kayak", "t_bank"],
                 severity=0.95,
-                trace_ids=["t_kayak", "t_bank"],
-                basin_ids=["b_fin"],
             )
         ]
     )
@@ -145,11 +140,7 @@ def test_interference_conflict_report_blocks_commit() -> None:
     assert out.decision == LucidityDecision.PRESERVE_AMBIGUITY
     assert out.check_results.contradiction_check is not None
     assert out.check_results.contradiction_check.passed is False
-    assert out.render_packet is not None
-    assert any(
-        "ic_bank_scope" in omission.forbidden_claim_refs
-        for omission in out.render_packet.explicit_omissions
-    )
+    assert out.check_results.contradiction_check.details.get("interference_conflict_count", 0) >= 1
 
 
 def test_high_risk_answer_requests_projection_before_commit() -> None:

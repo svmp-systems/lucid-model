@@ -1,7 +1,9 @@
 Lucid training artifacts — LOCAL ONLY (not pushed to GitHub)
 
-Everything under train/ is in .gitignore except this file.
+Everything under train/ is in .gitignore except this file and train/tests/.
 Never: git add train/checkpoints/ train/data/ train/audit/
+
+  tests/                 pytest suite (py -m pytest from repo root)
 
   checkpoints/local/     weights (lucid train / lucid run --checkpoint train/checkpoints/local)
   data/generated/        episode JSONL (lucid-gen pack)
