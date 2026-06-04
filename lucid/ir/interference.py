@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import ComputePolicy
-from lucid.ir.context_op import ContextFrame, InterferenceGate
+from lucid.ir.context_op import (
+    ContextFrame,
+    FrameLink,
+    InterferenceGate,
+    LocalBasinPressure,
+    ScopedTraceAssignment,
+)
 from lucid.ir.dmf import DmfOutput
 
 
@@ -41,11 +47,57 @@ class BasinBasinEdge:
 
 
 @dataclass(slots=True)
+class BasinEnergyDelta:
+    scope_frame_id: str
+    basin_id: str
+    delta: float
+    reason_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ConflictReport:
+    scope_frame_id: str
+    conflict_type: str
+    members: list[str] = field(default_factory=list)
+    severity: float = 0.0
+
+
+@dataclass(slots=True)
+class LearnedInterferenceLink:
+    source_id: str
+    target_id: str
+    weight: float
+    scope_hint: str = ""
+
+
+@dataclass(slots=True)
+class InterferenceLearningPatch:
+    source_id: str
+    target_id: str
+    scope_hint: str
+    delta: float
+    reason: str
+    evidence_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class InterferenceLearningResult:
+    patches: list[InterferenceLearningPatch] = field(default_factory=list)
+    store_path: str = ""
+    audit_path: str = ""
+    audit_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class InterferenceInput:
     context_frames: list[ContextFrame]
     candidate_frames: list[CandidateFrame]
     dmf_output: DmfOutput
     interference_gates: list[InterferenceGate] = field(default_factory=list)
+    scoped_trace_assignments: list[ScopedTraceAssignment] = field(default_factory=list)
+    frame_links: list[FrameLink] = field(default_factory=list)
+    local_basin_pressures: list[LocalBasinPressure] = field(default_factory=list)
+    learned_interference_links: list[LearnedInterferenceLink] = field(default_factory=list)
     compute_policy: ComputePolicy = field(default_factory=ComputePolicy)
 
 
@@ -56,5 +108,8 @@ class InterferenceOutput:
     frame_basin_edges: list[FrameBasinEdge] = field(default_factory=list)
     basin_basin_edges: list[BasinBasinEdge] = field(default_factory=list)
     basin_energy_deltas: dict[str, float] = field(default_factory=dict)
+    scoped_basin_energy_deltas: list[BasinEnergyDelta] = field(default_factory=list)
     cooperation_maps: dict[str, list[str]] = field(default_factory=dict)
     competition_maps: dict[str, list[str]] = field(default_factory=dict)
+    conflict_reports: list[ConflictReport] = field(default_factory=list)
+    audit_notes: list[str] = field(default_factory=list)

@@ -34,6 +34,7 @@ from lucid.cognition.projector import run_projector
 from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.cognition.reasoning.interference import run_interference
 from lucid.ir.pipeline import RunContext
 from lucid.memory.dmf import DynamicMemoryField, load_dynamic_memory_field
 
@@ -151,8 +152,12 @@ def context_op(inp: ContextOpInput, _ctx: object) -> ContextOpOutput:
     return run_context_op(inp)
 
 
-def interference(inp: InterferenceInput, _ctx: object) -> InterferenceOutput:
-    return InterferenceOutput()
+def interference(inp: InterferenceInput, ctx: object) -> InterferenceOutput:
+    extra = _extra_from_context(ctx)
+    learned = extra.get("learned_interference_links")
+    if learned and not inp.learned_interference_links:
+        inp = replace(inp, learned_interference_links=list(learned))
+    return run_interference(inp)
 
 
 def basins(inp: BasinInput, ctx: object) -> BasinOutput:

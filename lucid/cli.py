@@ -17,6 +17,13 @@ from lucid.cognition.projector import run_projector
 from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
+from lucid.cognition.reasoning.interference import run_interference
+from lucid.cognition.reasoning.interference_learning import (
+    DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR,
+    DEFAULT_INTERFERENCE_STORE,
+    learn_interference,
+    load_learned_interference_links,
+)
 from lucid.audit.binding import write_binding_audit
 from lucid.ir.basins import BasinInput
 from lucid.ir.binding import BindingInput
@@ -26,7 +33,7 @@ from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturitySt
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
-from lucid.ir.interference import InterferenceOutput
+from lucid.ir.interference import InterferenceInput, InterferenceOutput
 from lucid.ir.lucidity import SearchDirectives
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
@@ -223,6 +230,69 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
     print(to_json(out))
+    return 0
+
+
+def _bank_interference_input(
+    context_input: ContextOpInput,
+    context_output: object,
+    *,
+    learned_interference_links: list | None = None,
+) -> InterferenceInput:
+    return InterferenceInput(
+        context_frames=context_output.context_frames,
+        candidate_frames=context_input.binding_candidate_frames,
+        dmf_output=context_input.dmf_output,
+        interference_gates=context_output.interference_gates,
+        scoped_trace_assignments=context_output.scoped_trace_assignments,
+        frame_links=context_output.frame_links,
+        local_basin_pressures=context_output.local_basin_pressures,
+        learned_interference_links=learned_interference_links or [],
+    )
+
+
+def _cmd_interference(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown interference fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    context_input = _bank_context_fixture(feedback=args.feedback)
+    context_output = run_context_op(context_input)
+    learned_links = load_learned_interference_links(args.store) if args.use_store else []
+    out = run_interference(
+        _bank_interference_input(
+            context_input,
+            context_output,
+            learned_interference_links=learned_links,
+        )
+    )
+    print(to_json(out))
+    return 0
+
+
+def _cmd_interference_learn(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown interference learning fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    context_input = _bank_context_fixture(feedback=args.feedback)
+    context_output = run_context_op(context_input)
+    learned_links = load_learned_interference_links(args.store)
+    inp = _bank_interference_input(
+        context_input,
+        context_output,
+        learned_interference_links=learned_links,
+    )
+    out = run_interference(inp)
+    result = learn_interference(
+        inp,
+        out,
+        validation_success=args.outcome == "success",
+        failure_type=args.failure_type,
+        store_path=args.store,
+        audit_dir=args.audit_dir,
+    )
+    print(to_json(result))
     return 0
 
 
@@ -641,6 +711,60 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lucidity feedback token, e.g. SEARCH_WIDER",
     )
     context_parser.set_defaults(func=_cmd_context_op)
+
+    interference_parser = sub.add_parser("interference", help="Run interference on a built-in fixture")
+    interference_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    interference_parser.add_argument(
+        "--store",
+        default=str(DEFAULT_INTERFERENCE_STORE),
+        help="Path to learned interference links JSON",
+    )
+    interference_parser.add_argument(
+        "--use-store",
+        action="store_true",
+        help="Load learned links from --store before running",
+    )
+    interference_parser.add_argument(
+        "--feedback",
+        action="append",
+        default=[],
+        help="Lucidity feedback token passed through context-op first",
+    )
+    interference_parser.set_defaults(func=_cmd_interference)
+
+    interference_learn_parser = sub.add_parser(
+        "interference-learn",
+        help="Learn scoped interference links from a built-in fixture",
+    )
+    interference_learn_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    interference_learn_parser.add_argument(
+        "--outcome",
+        default="success",
+        choices=["success", "failure"],
+        help="Validated outcome to learn from",
+    )
+    interference_learn_parser.add_argument(
+        "--failure-type",
+        default="interference_or_basin",
+        help="Failure label used when --outcome failure",
+    )
+    interference_learn_parser.add_argument(
+        "--store",
+        default=str(DEFAULT_INTERFERENCE_STORE),
+        help="Path to learned interference links JSON",
+    )
+    interference_learn_parser.add_argument(
+        "--audit-dir",
+        default=str(DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR),
+        help="Folder for human and machine readable learning audit logs",
+    )
+    interference_learn_parser.add_argument(
+        "--feedback",
+        action="append",
+        default=[],
+        help="Lucidity feedback token passed through context-op first",
+    )
+    interference_learn_parser.set_defaults(func=_cmd_interference_learn)
 
     basins_parser = sub.add_parser("basins", help="Run basins on a built-in fixture")
     basins_parser.add_argument("--fixture", default="bank", choices=["bank"])
