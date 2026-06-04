@@ -422,6 +422,7 @@ class OrchestratorRunner:
 
         run.decoder_input = DecoderInput(
             lucidity_output=run.lucidity_output,
+            render_packet=run.lucidity_output.render_packet,
             committed_state=run.lucidity_output.committed_state,
             decoder_policy=run.lucidity_output.decoder_policy,
         )

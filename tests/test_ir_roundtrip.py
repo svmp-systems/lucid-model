@@ -23,13 +23,16 @@ from lucid.ir.common import (
 from lucid.ir.context_op import ContextFrame, ContextOpOutput
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.dmf import ActiveTrace, DmfInput, DmfOutput
-from lucid.ir.expression import DecoderOutput
+from lucid.ir.expression import DecoderOutput, FaithfulnessReport, SentenceRef
 from lucid.ir.interference import InterferenceOutput, TraceTraceEdge
 from lucid.ir.lucidity import (
     CommittedState,
     DecoderPolicy,
     LucidityOutput,
+    LucidityRenderPacket,
+    RenderUnit,
     SearchDirectives,
+    SourceRef,
 )
 from lucid.ir.memory import BasinRecord, TraceRecord, WeightedLink
 from lucid.ir.perception import (
@@ -145,7 +148,36 @@ def test_layer5_lucidity_projector_decoder():
         ),
         ProjectorOutput,
     )
-    _roundtrip(DecoderOutput(surface_text="The river bank."), DecoderOutput)
+    packet = LucidityRenderPacket(
+        packet_id="rp-1",
+        decision=LucidityDecision.COMMIT,
+        render_mode="committed",
+        approved_units=[
+            RenderUnit(
+                unit_id="u1",
+                unit_type="claim",
+                payload={"summary": "river bank"},
+                source_refs=[SourceRef(ref_type="trace", ref_id="t1")],
+            )
+        ],
+    )
+    _roundtrip(packet, LucidityRenderPacket)
+    _roundtrip(
+        DecoderOutput(
+            surface_text="The river bank.",
+            render_mode="committed",
+            sentence_refs=[SentenceRef(sentence_id="s0", unit_ids=["u1"])],
+            faithfulness_report=FaithfulnessReport(passed=True),
+        ),
+        DecoderOutput,
+    )
+    lucidity_with_packet = LucidityOutput(
+        decision=LucidityDecision.COMMIT,
+        decoder_policy=policy,
+        committed_state=committed,
+        render_packet=packet,
+    )
+    _roundtrip(lucidity_with_packet, LucidityOutput)
 
 
 def test_layer6_memory_and_training():
