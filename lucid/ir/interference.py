@@ -41,6 +41,18 @@ class BasinBasinEdge:
 
 
 @dataclass(slots=True)
+class InterferenceConflictReport:
+    report_id: str
+    conflict_type: str
+    severity: float
+    scope_frame_id: str = ""
+    trace_ids: list[str] = field(default_factory=list)
+    basin_ids: list[str] = field(default_factory=list)
+    source_edge_ids: list[str] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass(slots=True)
 class InterferenceInput:
     context_frames: list[ContextFrame]
     candidate_frames: list[CandidateFrame]
@@ -55,6 +67,7 @@ class InterferenceOutput:
     trace_frame_edges: list[TraceFrameEdge] = field(default_factory=list)
     frame_basin_edges: list[FrameBasinEdge] = field(default_factory=list)
     basin_basin_edges: list[BasinBasinEdge] = field(default_factory=list)
+    conflict_reports: list[InterferenceConflictReport] = field(default_factory=list)
     basin_energy_deltas: dict[str, float] = field(default_factory=dict)
     cooperation_maps: dict[str, list[str]] = field(default_factory=dict)
     competition_maps: dict[str, list[str]] = field(default_factory=dict)

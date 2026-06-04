@@ -9,6 +9,8 @@ from json import JSONDecodeError
 from pathlib import Path
 
 from lucid.audit.basins import write_basins_audit
+from lucid.audit.lucidity import write_lucidity_audit
+from lucid.cognition.lucidity import run_lucidity
 from lucid.audit.cue import write_cue_encoder_audit
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
@@ -19,7 +21,7 @@ from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.audit.binding import write_binding_audit
 from lucid.ir.basins import BasinInput
-from lucid.ir.binding import BindingInput
+from lucid.ir.binding import BindingInput, BindingOutput
 from lucid.memory.dmf import load_dynamic_memory_field
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState
@@ -27,14 +29,15 @@ from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
 from lucid.ir.interference import InterferenceOutput
-from lucid.ir.lucidity import SearchDirectives
+from lucid.ir.basins import BasinOutput, CompetitionSummary, CandidateBasinState
+from lucid.ir.lucidity import LucidityInput, SearchDirectives
+from lucid.ir.projector import ProjectorOutput
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
 from lucid.ir.serde import from_json, to_json
 from lucid.ir.training import Episode
 from lucid.memory.dmf import DmfTraceRecord, DynamicMemoryField
 from lucid.training.dmf import learn_from_episode
-from lucid.paths import smoke_audit_dir
 from lucid.training.orchestrator.orchestrator import (
     BlameAssigner,
     RunLog,
@@ -46,6 +49,7 @@ from lucid.paths import (
     DEFAULT_AUDIT_BINDING,
     DEFAULT_AUDIT_CUE_ENCODER,
     DEFAULT_AUDIT_DMF,
+    DEFAULT_AUDIT_LUCIDITY,
     DEFAULT_AUDIT_RUNS,
     smoke_audit_dir,
 )
@@ -222,6 +226,83 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
+    print(to_json(out))
+    return 0
+
+
+def _lucidity_bank_input(*, pass_kind: str, checkpoint: str) -> LucidityInput:
+    context_in = _bank_context_fixture()
+    context_out = run_context_op(context_in)
+    basin_input = BasinInput(
+        interference_output=InterferenceOutput(),
+        candidate_frames=context_in.binding_candidate_frames,
+        context_frames=context_out.context_frames,
+        local_basin_pressures=context_out.local_basin_pressures,
+    )
+    basin_out = run_basins(basin_input, config=BasinsConfig(checkpoint=checkpoint or None))
+    return LucidityInput(
+        basin_output=basin_out,
+        binding_output=BindingOutput(
+            candidate_frames=context_in.binding_candidate_frames,
+            binding_stability_score=0.72,
+        ),
+        context_op_output=context_out,
+        interference_output=InterferenceOutput(),
+        dmf_output=context_in.dmf_output,
+        perceptual_evidence_graph=context_in.perceptual_evidence_graph,
+        task_intent="answer",
+        risk_level="medium",
+        pass_kind=pass_kind,
+    )
+
+
+def _lucidity_grid_input(*, pass_kind: str, projection: ProjectorOutput | None) -> LucidityInput:
+    context_out = run_context_op(_bank_context_fixture())
+    basin_out = BasinOutput(
+        candidate_basin_states=[
+            CandidateBasinState(basin_id="b_move", energy=0.9, margin_vs_next=0.03),
+            CandidateBasinState(basin_id="b_alt", energy=0.5, margin_vs_next=0.0),
+        ],
+        competition_summary=CompetitionSummary(
+            top_basin_id="b_move",
+            second_basin_id="b_alt",
+            top_margin=0.03,
+            active_basin_count=2,
+        ),
+    )
+    return LucidityInput(
+        basin_output=basin_out,
+        binding_output=BindingOutput(candidate_frames=[], binding_stability_score=0.8),
+        context_op_output=context_out,
+        interference_output=InterferenceOutput(),
+        dmf_output=DmfOutput(coverage_score=0.9),
+        perceptual_evidence_graph=PerceptualEvidenceGraph(),
+        task_intent="solve_grid",
+        risk_level="high",
+        pass_kind=pass_kind,
+        projection_output=projection,
+    )
+
+
+def _cmd_lucidity(args: argparse.Namespace) -> int:
+    if args.fixture == "bank":
+        inp = _lucidity_bank_input(pass_kind=args.pass_kind, checkpoint=args.checkpoint)
+    elif args.fixture == "grid":
+        projection = None
+        if args.pass_kind == "final_check":
+            projection = run_projector(_grid_move_projector_fixture(args.max_rollouts))
+        inp = _lucidity_grid_input(pass_kind=args.pass_kind, projection=projection)
+    else:
+        print(f"unknown lucidity fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    out = run_lucidity(inp)
+    write_lucidity_audit(
+        audit_base_dir=args.audit_dir,
+        lucidity_input=inp,
+        lucidity_output=out,
+        details={"fixture": args.fixture, "pass_kind": args.pass_kind},
+    )
     print(to_json(out))
     return 0
 
@@ -649,6 +730,18 @@ def _build_parser() -> argparse.ArgumentParser:
     basins_parser.add_argument("--min-energy", type=float, default=0.15)
     basins_parser.add_argument("--audit-dir", default=smoke_audit_dir("basins"))
     basins_parser.set_defaults(func=_cmd_basins)
+
+    lucidity_parser = sub.add_parser("lucidity", help="Run lucidity gate on a built-in fixture")
+    lucidity_parser.add_argument("--fixture", default="bank", choices=["bank", "grid"])
+    lucidity_parser.add_argument(
+        "--pass-kind",
+        default="pre_check",
+        choices=["pre_check", "final_check", "recheck"],
+    )
+    lucidity_parser.add_argument("--checkpoint", default="", help="Checkpoint for basin bank")
+    lucidity_parser.add_argument("--max-rollouts", type=int, default=1)
+    lucidity_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_LUCIDITY)
+    lucidity_parser.set_defaults(func=_cmd_lucidity)
 
     projector_parser = sub.add_parser("projector", help="Run projector on a built-in fixture")
     projector_parser.add_argument("--fixture", default="grid-move", choices=["grid-move"])
