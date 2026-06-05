@@ -114,6 +114,8 @@ LucidityOutput {
 
     decoder_policy              // mandatory — gates decoder behavior
 
+    render_packet               // mandatory unless decoder_policy.mode == hold
+
     check_results: {
         margin_check
         coverage_check
@@ -513,6 +515,7 @@ CommittedState {
         {claim_type, subject_ref, predicate_ref, confidence, scope}
     ]
     unresolved: [...]              // optional explicit leftover ambiguity
+    render_units: [...]            // decoder-ready approved units; see LucidityRenderPacket
     projection_artifact           // optional grid IR, plan IR
     provenance_chain
 }
@@ -524,6 +527,82 @@ CommittedState {
 | `per_frame` | `frame_commits` (one basin per independent frame) |
 | `assembly` | `assembly_ids` or `member_basin_ids` + `projection_artifact` if grid |
 | `rollout_plan` | `rollout_steps` + `projection_artifact` |
+
+---
+
+## LucidityRenderPacket
+
+Lucidity prepares the decoder's working set. The decoder should not re-read raw upstream state to decide what is true.
+
+```text
+LucidityRenderPacket {
+    packet_id
+    decision
+    render_mode                 // committed | plural | uncertainty | refusal | hold
+    output_format               // text | grid | action | plan | tool_call | structured_json
+
+    approved_units: [
+        {
+            unit_id
+            unit_type            // claim | frame_summary | alternative | caveat | artifact | action
+            scope_frame_id
+            text_intent          // answer | reason | caveat | next_step | refusal
+            payload              // structured content, not prose-first
+            confidence
+            required
+            source_refs: [
+                {ref_type, ref_id, scope_frame_id, role}
+            ]
+        }
+    ]
+
+    preserved_alternatives: [
+        {
+            hypothesis_id
+            scope_frame_id
+            basin_id
+            contrast_with
+            source_refs
+        }
+    ]
+
+    explicit_omissions: [
+        {
+            reason               // unsupported | low_margin | high_risk | projection_failed
+            forbidden_claim_refs
+            user_visible
+        }
+    ]
+
+    render_constraints: {
+        max_sentences
+        max_tokens
+        detail_level             // terse | normal | expanded | audit
+        audience_level           // child | general | expert | machine
+        tone                     // neutral | direct | careful | instructional
+        must_include_refs
+        forbidden_refs
+    }
+
+    faithfulness_contract: {
+        forbid_new_entities
+        forbid_new_causal_links
+        require_source_refs_per_sentence
+        require_reparse_check
+    }
+
+    provenance_chain
+}
+```
+
+### Render packet rules
+
+1. Every user-visible claim must be represented as an `approved_unit` or `preserved_alternative`.
+2. Every approved unit must carry source refs to traces, basins, frames, evidence, conflicts, projection artifacts, tools, or validators.
+3. Anything lucidity does not approve should go into `explicit_omissions` when it matters to safety or ambiguity.
+4. If lucidity cannot build a faithful render packet, set `decoder_policy.mode = hold`, `express_uncertainty`, or `express_refusal`.
+
+This packet is the decoder's cost advantage: the decoder renders a bounded object instead of doing open-ended next-token reasoning.
 
 ---
 
@@ -542,8 +621,13 @@ DecoderPolicy {
     forbid_single_answer: bool
     forbid_invented_facts: bool
     require_cite_traces: bool
+    require_source_refs_per_sentence: bool
     max_detail_level: low | medium | high
+    max_sentences: int
+    max_tokens: int
     output_format: text | grid | action | plan | tool_call
+    allow_language_fallback: bool
+    fallback_budget: none | tiny | small | standard
 
     uncertainty_presentation: {
         show_alternatives: bool
@@ -566,6 +650,8 @@ DecoderPolicy {
 | RECHECK_BINDING | hold |
 
 **Anti-hallucination rule:** if lucidity is weak, decoder policy must express uncertainty or refuse — never fill gaps fluently.
+
+**Renderer rule:** decoder policy should prefer deterministic rendering. Language fallback is allowed only when `allow_language_fallback == true` and the post-render faithfulness check is required.
 
 ---
 
@@ -652,8 +738,29 @@ decision: COMMIT
 commit_shape: single
 committed_state: {
     frame_commits: [{ frame: F2, frame_type: word_sense, basin: b00491, role_map: { DESTINATION: t00491 } }]
+    render_units: [
+        {
+            unit_type: claim
+            scope_frame_id: F2
+            payload: {bank_sense: financial_storage}
+            source_refs: [t_money, t_placed, t_bank, b00491]
+        }
+    ]
 }
-decoder_policy: { mode: express_committed, forbid_invented_facts: true }
+render_packet: {
+    render_mode: committed
+    output_format: text
+    approved_units: committed_state.render_units
+    explicit_omissions: [
+        {reason: unsupported, forbidden_claim_refs: [global_kayak_finance_merge]}
+    ]
+}
+decoder_policy: {
+    mode: express_committed
+    forbid_invented_facts: true
+    require_source_refs_per_sentence: true
+    max_sentences: 2
+}
 ```
 
 If both F1 and F2 were committed in one pass (multi-clause answer):
@@ -699,8 +806,16 @@ committed_state: {
     assembly_ids: [ASY1]
     member_basin_ids: [b5502, b3340]
     projection_artifact: { grid_output, ir_program_ref }
+    render_units: [
+        {unit_type: artifact, payload: {grid_output}, source_refs: [projection_result, ASY1]}
+    ]
 }
-decoder_policy: { mode: express_committed, output_format: grid }
+render_packet: {
+    render_mode: committed
+    output_format: grid
+    approved_units: committed_state.render_units
+}
+decoder_policy: { mode: express_committed, output_format: grid, max_sentences: 0 }
 ```
 
 If projection fit fails:
@@ -740,6 +855,14 @@ GOOD: full check suite + decoder policy
 ```
 BAD:  decoder picks fluent answer when decision PRESERVE_AMBIGUITY
 GOOD: decoder_policy.forbid_single_answer = true
+GOOD: render_packet.render_mode = plural
+```
+
+**Do not make decoder re-derive truth from upstream state.**
+
+```
+BAD:  decoder reads basins/conflicts directly and decides what to say
+GOOD: lucidity emits render_packet.approved_units with source_refs
 ```
 
 **Do not run projection by default on every pass.**
@@ -813,7 +936,7 @@ Lucidity is both **runtime gate** and **learning referee**.
 ```
 Lucidity = controlled collapse gate
 Input:     basin_output + frames + task_intent + optional projection
-Output:    primary decision + CommittedState (with commit_shape) + decoder_policy + checks
+Output:    primary decision + CommittedState (with commit_shape) + render_packet + decoder_policy + checks
 Decisions: COMMIT | PRESERVE_AMBIGUITY | REQUEST_PROJECTION | SEARCH_WIDER | RECHECK_BINDING
 Commit:    commit_shape = single | per_frame | assembly | rollout_plan (under COMMIT only)
 Rollout:   via REQUEST_PROJECTION + search_directives — not a separate decision

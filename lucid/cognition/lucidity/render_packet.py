@@ -1,4 +1,4 @@
-"""Build LucidityRenderPacket — decoder script from lucidity output."""
+﻿"""Build LucidityRenderPacket ΓÇö decoder script from lucidity output."""
 
 from __future__ import annotations
 
@@ -74,9 +74,29 @@ def _claim_unit_from_structured(claim: StructuredClaim, *, unit_id: str) -> Rend
     )
 
 
+def _normalize_grid_artifact_unit(unit: RenderUnit) -> RenderUnit:
+    if unit.unit_type != "artifact":
+        return unit
+    grid = _grid_from_artifact(unit.payload)
+    if grid is None:
+        return unit
+    payload = dict(unit.payload)
+    payload["grid_output"] = grid
+    return RenderUnit(
+        unit_id=unit.unit_id,
+        unit_type=unit.unit_type,
+        scope_frame_id=unit.scope_frame_id,
+        text_intent=unit.text_intent,
+        payload=payload,
+        confidence=unit.confidence,
+        required=unit.required,
+        source_refs=list(unit.source_refs),
+    )
+
+
 def _units_from_committed(committed: CommittedState) -> list[RenderUnit]:
     if committed.render_units:
-        return list(committed.render_units)
+        return [_normalize_grid_artifact_unit(unit) for unit in committed.render_units]
 
     if committed.claims:
         return [_claim_unit_from_structured(claim, unit_id=f"claim-{index}") for index, claim in enumerate(committed.claims)]

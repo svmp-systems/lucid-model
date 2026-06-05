@@ -1,4 +1,4 @@
-"""Layer 5 — lucidity gate, committed state, checks."""
+﻿"""Layer 5 — lucidity gate, committed state, checks."""
 
 from __future__ import annotations
 

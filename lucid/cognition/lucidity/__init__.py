@@ -1,4 +1,4 @@
-"""Lucidity gate — checks, decision, render packet for the decoder."""
+﻿"""Lucidity gate — checks, decision, render packet for the decoder."""
 
 from lucid.cognition.lucidity.checks import run_checks
 from lucid.cognition.lucidity.config import LucidityConfig

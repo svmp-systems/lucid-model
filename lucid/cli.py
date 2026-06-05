@@ -9,7 +9,9 @@ from json import JSONDecodeError
 from pathlib import Path
 
 from lucid.audit.basins import write_basins_audit
+from lucid.audit.decoder import write_decoder_audit
 from lucid.audit.lucidity import write_lucidity_audit
+from lucid.cognition.decoder import run_decoder
 from lucid.cognition.lucidity import run_lucidity
 from lucid.audit.cue import write_cue_encoder_audit
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
@@ -36,8 +38,18 @@ from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
 from lucid.ir.basins import BasinOutput, CandidateBasinState, CompetitionSummary
+from lucid.ir.common import DecoderMode, LucidityDecision
+from lucid.ir.expression import DecoderInput
 from lucid.ir.interference import InterferenceInput, InterferenceOutput
-from lucid.ir.lucidity import LucidityInput, SearchDirectives
+from lucid.ir.lucidity import (
+    DecoderPolicy,
+    LucidityInput,
+    LucidityOutput,
+    LucidityRenderPacket,
+    RenderUnit,
+    SearchDirectives,
+    SourceRef,
+)
 from lucid.ir.projector import ProjectorOutput
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
@@ -422,6 +434,93 @@ def _grid_move_projector_fixture(max_rollouts: int) -> ProjectorInput:
         ),
         task_intent="solve_grid",
     )
+
+
+def _decoder_bank_packet() -> LucidityRenderPacket:
+    return LucidityRenderPacket(
+        packet_id="smoke-bank",
+        decision=LucidityDecision.COMMIT,
+        render_mode="committed",
+        output_format="text",
+        approved_units=[
+            RenderUnit(
+                unit_id="claim-bank",
+                unit_type="claim",
+                scope_frame_id="F2",
+                payload={"bank_sense": "financial_storage"},
+                required=True,
+                source_refs=[
+                    SourceRef(ref_type="trace", ref_id="t_money"),
+                    SourceRef(ref_type="trace", ref_id="t_bank"),
+                    SourceRef(ref_type="basin", ref_id="b_financial"),
+                ],
+            ),
+            RenderUnit(
+                unit_id="caveat-kayak",
+                unit_type="caveat",
+                payload={"kayaking_scope": "separate_event"},
+                required=False,
+                source_refs=[SourceRef(ref_type="frame", ref_id="F1")],
+            ),
+        ],
+    )
+
+
+def _cmd_decoder(args: argparse.Namespace) -> int:
+    if args.fixture == "bank":
+        packet = _decoder_bank_packet()
+        policy = DecoderPolicy(
+            mode=DecoderMode.EXPRESS_COMMITTED.value,
+            output_channel="chat",
+            max_sentences=args.max_sentences,
+        )
+    elif args.fixture == "plural":
+        packet = LucidityRenderPacket(
+            packet_id="smoke-plural",
+            decision=LucidityDecision.PRESERVE_AMBIGUITY,
+            render_mode="plural",
+            preserved_alternatives=[
+                {
+                    "basin_id": "b_fin",
+                    "narrative_hint": "financial bank",
+                    "source_refs": [SourceRef(ref_type="basin", ref_id="b_fin")],
+                },
+                {
+                    "basin_id": "b_river",
+                    "narrative_hint": "river bank",
+                    "source_refs": [SourceRef(ref_type="basin", ref_id="b_river")],
+                },
+            ],
+        )
+        policy = DecoderPolicy(
+            mode=DecoderMode.EXPRESS_PLURAL.value,
+            forbid_single_answer=True,
+            output_channel="chat",
+        )
+    else:
+        print(f"unknown decoder fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    lucidity_out = LucidityOutput(
+        decision=packet.decision,
+        decoder_policy=policy,
+        render_packet=packet,
+    )
+    decoder_input = DecoderInput(
+        lucidity_output=lucidity_out,
+        render_packet=packet,
+        decoder_policy=policy,
+        output_channel="chat",
+    )
+    out = run_decoder(decoder_input)
+    write_decoder_audit(
+        audit_base_dir=args.audit_dir,
+        decoder_input=decoder_input,
+        decoder_output=out,
+        details={"fixture": args.fixture},
+    )
+    print(to_json(out))
+    return 0 if not out.refused else 1
 
 
 def _cmd_projector(args: argparse.Namespace) -> int:
@@ -868,6 +967,12 @@ def _build_parser() -> argparse.ArgumentParser:
     lucidity_parser.add_argument("--max-rollouts", type=int, default=1)
     lucidity_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_LUCIDITY)
     lucidity_parser.set_defaults(func=_cmd_lucidity)
+
+    decoder_parser = sub.add_parser("decoder", help="Render a lucidity script into chat text")
+    decoder_parser.add_argument("--fixture", default="bank", choices=["bank", "plural"])
+    decoder_parser.add_argument("--max-sentences", type=int, default=3)
+    decoder_parser.add_argument("--audit-dir", default=smoke_audit_dir("decoder"))
+    decoder_parser.set_defaults(func=_cmd_decoder)
 
     projector_parser = sub.add_parser("projector", help="Run projector on a built-in fixture")
     projector_parser.add_argument("--fixture", default="grid-move", choices=["grid-move"])

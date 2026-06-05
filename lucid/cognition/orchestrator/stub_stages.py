@@ -12,7 +12,6 @@ from lucid.audit.logger import resolve_run_dir
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.ir.basins import BasinInput, BasinOutput
 from lucid.ir.binding import BindingInput, BindingOutput, CandidateFrame
-from lucid.ir.common import DecoderMode, LucidityDecision
 from lucid.ir.context_op import ContextOpInput, ContextOpOutput
 from lucid.ir.cue import CueCloud, CueEncoderInput
 from lucid.ir.dmf import DmfInput, DmfOutput
@@ -23,6 +22,7 @@ from lucid.ir.lucidity import LucidityInput, LucidityOutput
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.projector import ProjectorInput, ProjectorOutput
 from lucid.cognition.input.perception import PerceptionConfig, perceive as run_perception
+from lucid.cognition.decoder import run_decoder
 from lucid.cognition.projector import run_projector
 from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
@@ -167,32 +167,14 @@ def lucidity(inp: LucidityInput, ctx: object) -> LucidityOutput:
 
 
 def decoder(inp: DecoderInput, ctx: object) -> DecoderOutput:
-    policy = inp.decoder_policy or inp.lucidity_output.decoder_policy
-    if policy.mode == DecoderMode.HOLD.value:
-        return DecoderOutput(surface_text="", refused=False)
-
-    committed = inp.committed_state or inp.lucidity_output.committed_state
-    if committed is not None and committed.projection_artifact:
-        test_outputs = committed.projection_artifact.get("test_outputs")
-        if isinstance(test_outputs, list) and test_outputs:
-            first = test_outputs[0]
-            if isinstance(first, list):
-                return DecoderOutput(surface_grid=first)
-
-    episode = getattr(ctx, "episode", None)
-    expected = None
-    if episode is not None and getattr(episode, "gold", None) is not None:
-        expected = getattr(episode.gold, "expected_answer", None)
-
-    if isinstance(expected, str) and expected.strip():
-        return DecoderOutput(surface_text=expected.strip())
-    if isinstance(expected, list):
-        return DecoderOutput(surface_grid=expected)
-
-    if inp.lucidity_output.decision == LucidityDecision.COMMIT:
-        return DecoderOutput(surface_text="(committed)")
-
-    return DecoderOutput(surface_text="(holding: ambiguity)")
+    if inp.render_packet is None and inp.lucidity_output.render_packet is not None:
+        inp = replace(
+            inp,
+            render_packet=inp.lucidity_output.render_packet,
+            committed_state=inp.committed_state or inp.lucidity_output.committed_state,
+            decoder_policy=inp.decoder_policy or inp.lucidity_output.decoder_policy,
+        )
+    return run_decoder(inp, ctx)
 
 
 def build_default_stage_fns() -> dict[str, object]:

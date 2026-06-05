@@ -188,6 +188,16 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
 
     elif stage_name == "decoder":
         refused = data.get("refused", False)
+        report = data.get("faithfulness_report") or {}
+        if isinstance(report, dict):
+            passed = report.get("passed", True)
+            lines.append(f"faithfulness: {'pass' if passed else 'fail'}")
+            violations = report.get("policy_violations") or []
+            if violations:
+                lines.append(f"violations: {', '.join(str(v) for v in violations[:3])}")
+        render_mode = data.get("render_mode", "")
+        if render_mode:
+            lines.append(f"render_mode: {render_mode}")
         grid = data.get("surface_grid")
         if isinstance(grid, list) and grid and isinstance(grid[0], list):
             rows = len(grid)
