@@ -25,6 +25,7 @@ from lucid.ir.perception import PerceptionInput
 from lucid.ir.pipeline import (
     PipelineRun,
     RunContext,
+    SessionState,
     StageExecutionRecord,
     StageName,
     StageResult,
@@ -199,6 +200,7 @@ class OrchestratorRunner:
         *,
         session_id: str = "",
         turn_index: int = 0,
+        session_state: SessionState | None = None,
     ) -> PipelineRun:
         ctx = RunContext(
             run_id=str(uuid4()),
@@ -211,6 +213,7 @@ class OrchestratorRunner:
                 else TaskIntent(str(episode.task_intent))
             ),
             episode=None,
+            session_state=session_state,
         )
         # Keep a reference for runtime stages that need training metadata.
         ctx.episode = episode  # type: ignore[assignment]
