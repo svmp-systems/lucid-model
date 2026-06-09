@@ -77,10 +77,11 @@ def content_hash(obj: Any) -> str:
 
 
 def resolve_run_dir(base_dir: Path | str, context: RunContext) -> Path:
+    """``base_dir`` is the directory that directly contains run folders."""
     base = Path(base_dir)
     if context.session_id:
         return base / context.session_id / f"turn_{context.turn_index:04d}" / context.run_id
-    return base / "runs" / context.run_id
+    return base / context.run_id
 
 
 # --- Human summaries (embedded in JSON files) ---
@@ -145,10 +146,19 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
 
     elif stage_name == "interference":
         tt = len(data.get("trace_trace_edges") or [])
+        tf = len(data.get("trace_frame_edges") or [])
         fb = len(data.get("frame_basin_edges") or [])
+        scoped = len(data.get("scoped_basin_energy_deltas") or [])
+        conflicts = len(data.get("conflict_reports") or [])
         lines.append(f"trace_trace_edges: {tt}")
+        lines.append(f"trace_frame_edges: {tf}")
         lines.append(f"frame_basin_edges: {fb}")
-        headline = f"{tt} trace edges, {fb} frame→basin edges"
+        lines.append(f"scoped_basin_energy_deltas: {scoped}")
+        lines.append(f"conflict_reports: {conflicts}")
+        notes = data.get("audit_notes") or []
+        if notes:
+            lines.append(f"audit: {notes[0]}")
+        headline = f"{tt} trace edges, {scoped} scoped basin deltas, {conflicts} conflicts"
 
     elif stage_name == "basins":
         basins = data.get("candidate_basin_states") or []
@@ -178,31 +188,29 @@ def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
 
     elif stage_name == "decoder":
         refused = data.get("refused", False)
-        text = (data.get("surface_text") or "").strip()
+        report = data.get("faithfulness_report") or {}
+        if isinstance(report, dict):
+            passed = report.get("passed", True)
+            lines.append(f"faithfulness: {'pass' if passed else 'fail'}")
+            violations = report.get("policy_violations") or []
+            if violations:
+                lines.append(f"violations: {', '.join(str(v) for v in violations[:3])}")
+        render_mode = data.get("render_mode", "")
+        if render_mode:
+            lines.append(f"render_mode: {render_mode}")
         grid = data.get("surface_grid")
-        action = data.get("surface_action")
-        lines.append(f"refused: {refused}")
-        if text:
-            preview = text[:120] + ("…" if len(text) > 120 else "")
-            lines.append(f"surface_text: {preview}")
-        if isinstance(grid, list):
+        if isinstance(grid, list) and grid and isinstance(grid[0], list):
             rows = len(grid)
-            cols = len(grid[0]) if rows and isinstance(grid[0], list) else 0
+            cols = len(grid[0]) if grid[0] else 0
             lines.append(f"surface_grid: {rows}x{cols}")
-        if isinstance(action, dict) and action:
-            lines.append(f"surface_action_keys: {', '.join(sorted(action)[:6])}")
-        if refused:
-            headline = "refused"
-        elif text:
-            headline = text[:60] + "…" if len(text) > 60 else text
-        elif isinstance(grid, list):
-            rows = len(grid)
-            cols = len(grid[0]) if rows and isinstance(grid[0], list) else 0
             headline = f"grid {rows}x{cols}"
-        elif isinstance(action, dict) and action:
-            headline = "action"
         else:
-            headline = "empty"
+            text = (data.get("surface_text") or "").strip()
+            lines.append(f"refused: {refused}")
+            if text:
+                preview = text[:120] + ("…" if len(text) > 120 else "")
+                lines.append(f"surface_text: {preview}")
+            headline = "refused" if refused else (text[:60] + "…" if len(text) > 60 else text or "empty")
 
     else:
         keys = ", ".join(sorted(data.keys())[:8])
@@ -490,8 +498,7 @@ class AuditLogger:
         return from_dict(data, RunAuditManifest)
 
     def load_stage_record(self, run_dir: Path | str, stage_name: str) -> dict[str, Any]:
-        path = Path(run_dir) / _stage_file_name(stage_name)
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads((Path(run_dir) / _stage_file_name(stage_name)).read_text(encoding="utf-8"))
 
     def load_stage_envelope(self, run_dir: Path | str, stage_name: str) -> AuditEnvelope:
         """Rebuild AuditEnvelope from on-disk stage record (for older callers)."""
@@ -507,9 +514,5 @@ class AuditLogger:
                 "output_hash": record.get("output_hash", ""),
             },
             adapter_version=record.get("adapter_version", ""),
-            provenance=(
-                from_dict(record["provenance"], Provenance)
-                if record.get("provenance")
-                else None
-            ),
+            provenance=from_dict(record["provenance"], Provenance) if record.get("provenance") else None,
         )

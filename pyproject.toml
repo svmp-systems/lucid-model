@@ -22,7 +22,7 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 packages = ["lucid"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["train/tests"]
 pythonpath = ["."]
 
 [tool.ruff]

@@ -19,6 +19,7 @@ from lucid.ir.dmf import (
     TraceCluster,
 )
 from lucid.ir.serde import to_dict
+from lucid.paths import DEFAULT_AUDIT_DMF, resolve_train_path
 
 
 @dataclass(slots=True)
@@ -121,7 +122,7 @@ def tracebank_from_checkpoint(path: str | Path) -> list[DmfTraceRecord]:
 def load_dynamic_memory_field(
     checkpoint: str | Path | None = None,
     *,
-    audit_base_dir: str | Path | None = "audit/dmf",
+    audit_base_dir: str | Path | None = None,
 ) -> DynamicMemoryField:
     """Construct DMF runtime state from an optional checkpoint tracebank."""
 
@@ -143,11 +144,14 @@ class DynamicMemoryField:
         self,
         tracebank: list[DmfTraceRecord] | None = None,
         *,
-        audit_base_dir: str | Path | None = "audit/dmf",
+        audit_base_dir: str | Path | None = DEFAULT_AUDIT_DMF,
     ):
         self.tracebank: list[DmfTraceRecord] = tracebank or []
         self.audit_events: list[DmfAuditEvent] = []
-        self.audit_base_dir = Path(audit_base_dir) if audit_base_dir is not None else None
+        if audit_base_dir is None:
+            self.audit_base_dir = None
+        else:
+            self.audit_base_dir = resolve_train_path(audit_base_dir, mkdir=True)
         self._cue_index: dict[str, set[int]] = {}
         self._trace_id_index: dict[str, int] = {}
         self._cluster_index: dict[str, set[int]] = {}

@@ -31,9 +31,9 @@ class ClarityBand:
 
 
 PHASE1_BANDS: tuple[ClarityBand, ...] = (
-    ClarityBand(0.0, 0.2, weight=20),
-    ClarityBand(0.4, 0.6, weight=20),
-    ClarityBand(0.8, 1.0, weight=20),
+    ClarityBand(0.0, 0.33, weight=20),
+    ClarityBand(0.33, 0.66, weight=20),
+    ClarityBand(0.66, 1.0, weight=20),
 )
 
 DEFAULT_BANDS: tuple[ClarityBand, ...] = (
@@ -69,6 +69,71 @@ def rng_for_seed(seed: int) -> Random:
 # --- Checks (before recipes load) ---
 
 _COMPETING_TRACES = (("financial_action_like", "river_location_like"),)
+_GRID_COMPETING = (("position_shift_like", "recolor_like"),)
+
+
+def _nonzero_cells(grid: list[list[int]]) -> list[tuple[int, int, int]]:
+    return [(r, c, v) for r, row in enumerate(grid) for c, v in enumerate(row) if v != 0]
+
+
+def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _grid_reachability_errors(episode: Episode) -> list[str]:
+    errors: list[str] = []
+    raw = episode.raw_input
+    if not isinstance(raw, dict):
+        return errors
+    inp = raw.get("input")
+    out = raw.get("output") or episode.gold.expected_answer
+    if not isinstance(inp, list) or not isinstance(out, list):
+        return []
+
+    in_cells = _nonzero_cells(inp)
+    out_cells = _nonzero_cells(out)
+    if len(in_cells) != 1 or len(out_cells) != 1:
+        errors.append(
+            f"grid expects exactly one nonzero cell in/out (got {len(in_cells)}/{len(out_cells)})"
+        )
+        return errors
+
+    (in_r, in_c, in_v), (out_r, out_c, out_v) = in_cells[0], out_cells[0]
+    in_pos, out_pos = (in_r, in_c), (out_r, out_c)
+    template = episode.template_id or ""
+
+    if template == "grid_move":
+        if in_v != out_v:
+            errors.append("grid_move requires preserved color between input and output")
+        elif in_pos == out_pos:
+            errors.append("grid_move requires a position change")
+        else:
+            meta = episode.meta or {}
+            direction = str(meta.get("direction") or "")
+            steps = int(meta.get("steps") or 0)
+            distance = _manhattan(in_pos, out_pos)
+            if steps and distance != steps:
+                # steps is requested stride; walls can shorten the actual move
+                if distance > steps or distance == 0:
+                    errors.append(
+                        f"grid_move steps={steps} but manhattan distance={distance}"
+                    )
+            if direction == "left" and not (out_c < in_c and out_r == in_r):
+                errors.append("grid_move direction=left inconsistent with cell delta")
+            elif direction == "right" and not (out_c > in_c and out_r == in_r):
+                errors.append("grid_move direction=right inconsistent with cell delta")
+            elif direction == "up" and not (out_r < in_r and out_c == in_c):
+                errors.append("grid_move direction=up inconsistent with cell delta")
+            elif direction == "down" and not (out_r > in_r and out_c == in_c):
+                errors.append("grid_move direction=down inconsistent with cell delta")
+
+    if template == "grid_recolor":
+        if in_pos != out_pos:
+            errors.append("grid_recolor requires fixed cell position")
+        elif in_v == out_v:
+            errors.append("grid_recolor requires a color change")
+
+    return errors
 
 
 class CheckError(Exception):
@@ -84,12 +149,32 @@ def check_episode(episode: Episode) -> list[str]:
             errors.append(f"empty surface on span {span.span_id}")
 
     span_ids = {s.span_id for s in gold.spans}
+    region_ids = {r.region_id for r in gold.regions}
+    frame_ids = {f.frame_id for f in gold.frame_targets}
+    valid_scope_frames = frame_ids | region_ids
+
     for assignment in gold.scope_assignments:
         if assignment.span_id and assignment.span_id not in span_ids:
             errors.append(f"scope points at missing span {assignment.span_id}")
+        if assignment.primary_frame and valid_scope_frames and assignment.primary_frame not in valid_scope_frames:
+            errors.append(
+                f"scope primary_frame {assignment.primary_frame!r} not in frame_targets or regions"
+            )
+        for secondary in assignment.secondary_frames:
+            if valid_scope_frames and secondary not in valid_scope_frames:
+                errors.append(f"scope secondary_frame {secondary!r} not in frame_targets or regions")
+
+    for gate in gold.interference_gates:
+        if gate.scope_frame_id and valid_scope_frames and gate.scope_frame_id not in valid_scope_frames:
+            errors.append(
+                f"gate scope_frame_id {gate.scope_frame_id!r} not in frame_targets or regions"
+            )
 
     weights = {t.trace_family: t.weight for t in gold.trace_activations}
-    for a, b in _COMPETING_TRACES:
+    competing_pairs = _COMPETING_TRACES
+    if episode.modality in (Modality.GRID, "grid"):
+        competing_pairs = (*_COMPETING_TRACES, *_GRID_COMPETING)
+    for a, b in competing_pairs:
         total = weights.get(a, 0.0) + weights.get(b, 0.0)
         if total > 1.0 + 1e-6:
             errors.append(f"{a} + {b} weights sum to {total:.3f}")
@@ -110,6 +195,8 @@ def check_episode(episode: Episode) -> list[str]:
                 errors.append("grid input/output must be 2d arrays")
             elif len(inp) != len(out):
                 errors.append("grid height mismatch")
+            else:
+                errors.extend(_grid_reachability_errors(episode))
 
     return errors
 

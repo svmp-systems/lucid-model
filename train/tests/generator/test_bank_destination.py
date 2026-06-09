@@ -12,3 +12,8 @@ def test_high_ambiguity_commits():
     episode = bank_destination.make(rng_for_seed(99), AmbiguityKnob(0.9))
     assert episode.gold.lucidity_target == "COMMIT"
     assert episode.gold.expected_answer == "financial"
+
+
+def test_bank_destination_has_interference_gates():
+    episode = bank_destination.make(rng_for_seed(5), AmbiguityKnob(0.85))
+    assert episode.gold.interference_gates

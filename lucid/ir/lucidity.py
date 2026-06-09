@@ -1,4 +1,4 @@
-"""Layer 5 — lucidity gate, committed state, checks."""
+﻿"""Layer 5 — lucidity gate, committed state, checks."""
 
 from __future__ import annotations
 
@@ -81,6 +81,14 @@ class RolloutStep:
 
 
 @dataclass(slots=True)
+class SourceRef:
+    ref_type: str  # trace | basin | frame | evidence | conflict | projection | tool | validator
+    ref_id: str
+    scope_frame_id: str = ""
+    role: str = ""  # supports | contradicts | bounds | formats | verifies
+
+
+@dataclass(slots=True)
 class CommittedState:
     commit_id: str
     commit_shape: CommitShape = CommitShape.SINGLE
@@ -90,6 +98,7 @@ class CommittedState:
     frame_commits: list[FrameCommit] = field(default_factory=list)
     rollout_steps: list[RolloutStep] = field(default_factory=list)
     claims: list[StructuredClaim] = field(default_factory=list)
+    render_units: list[RenderUnit] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     projection_artifact: dict[str, Any] = field(default_factory=dict)
     provenance_chain: list[str] = field(default_factory=list)
@@ -109,7 +118,6 @@ class SearchDirectives:
     search_target: SearchTarget = SearchTarget.ALL
     cue_budget_multiplier: float = 1.0
     allow_new_frames: bool = False
-    allow_provisional_basins: bool = False
     projector_targets: list[str] = field(default_factory=list)
     max_rollouts: int = 0
     rollout_mode: str = "none"  # none | single_step | multi_step
@@ -119,13 +127,71 @@ class SearchDirectives:
 
 
 @dataclass(slots=True)
+class RenderUnit:
+    unit_id: str
+    unit_type: str  # claim | frame_summary | alternative | caveat | artifact | action
+    scope_frame_id: str = ""
+    text_intent: str = "answer"  # answer | reason | caveat | next_step | refusal
+    payload: dict[str, Any] = field(default_factory=dict)
+    confidence: float = 0.0
+    required: bool = True
+    source_refs: list[SourceRef] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ExplicitOmission:
+    reason: str  # unsupported | low_margin | high_risk | projection_failed
+    forbidden_claim_refs: list[str] = field(default_factory=list)
+    user_visible: bool = True
+
+
+@dataclass(slots=True)
+class RenderConstraints:
+    max_sentences: int = 4
+    max_tokens: int = 0
+    detail_level: str = "normal"  # terse | normal | expanded | audit
+    audience_level: str = "general"  # child | general | expert | machine
+    tone: str = "neutral"  # neutral | direct | careful | instructional
+    must_include_refs: list[str] = field(default_factory=list)
+    forbidden_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class FaithfulnessContract:
+    forbid_new_entities: bool = True
+    forbid_new_causal_links: bool = True
+    require_source_refs_per_sentence: bool = False
+    require_reparse_check: bool = False
+
+
+@dataclass(slots=True)
+class LucidityRenderPacket:
+    packet_id: str
+    decision: LucidityDecision
+    render_mode: str  # committed | plural | uncertainty | refusal | hold
+    output_format: str = "text"  # text | grid | action | plan | tool_call | structured_json
+    approved_units: list[RenderUnit] = field(default_factory=list)
+    preserved_alternatives: list[dict[str, Any]] = field(default_factory=list)
+    explicit_omissions: list[ExplicitOmission] = field(default_factory=list)
+    render_constraints: RenderConstraints = field(default_factory=RenderConstraints)
+    faithfulness_contract: FaithfulnessContract = field(default_factory=FaithfulnessContract)
+    provenance_chain: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class DecoderPolicy:
     mode: str  # DecoderMode value
     forbid_single_answer: bool = False
     forbid_invented_facts: bool = True
     require_cite_traces: bool = False
+    require_source_refs_per_sentence: bool = False
     max_detail_level: str = "medium"
-    output_format: str = "text"  # text | grid | action | plan
+    max_sentences: int = 0
+    max_tokens: int = 0
+    allow_language_fallback: bool = False
+    fallback_budget: int = 0
+    output_format: str = "text"  # text | grid | action | plan | tool_call | structured_json
+    output_channel: str = "chat"  # chat | cli | api | action_bus | grid
     show_alternatives: bool = False
     show_confidence: bool = False
     show_scope: bool = False
@@ -159,6 +225,7 @@ class LucidityOutput:
     committed_state: CommittedState | None = None
     preserved_hypotheses: list[PreservedHypothesis] = field(default_factory=list)
     search_directives: SearchDirectives | None = None
+    render_packet: LucidityRenderPacket | None = None
     secondary_decisions: list[LucidityDecision] = field(default_factory=list)
     audit_notes: list[str] = field(default_factory=list)
     provenance: Provenance = field(default_factory=Provenance)

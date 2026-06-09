@@ -6,8 +6,9 @@ import uuid
 from random import Random
 
 from lucid.ir.common import Modality, TaskIntent
-from lucid.ir.training import Episode, FrameSlotTarget, FrameTarget, GoldLabels, TraceTarget
+from lucid.ir.training import Episode, GoldLabels
 from lucid.training.generator.engine import AmbiguityKnob, require_valid
+from lucid.training.generator.recipes import grid_common
 
 NAME = "grid_move"
 MODALITY = "grid"
@@ -15,6 +16,7 @@ MODALITY = "grid"
 SIZE = 6
 COLORS = [1, 2, 3, 4, 5]
 DIRECTIONS = ["left", "right", "up", "down"]
+FRAME_ID = "frame_position_shift"
 
 
 def _blank(rows: int, cols: int) -> list[list[int]]:
@@ -39,53 +41,66 @@ def make(rng: Random, knob: AmbiguityKnob) -> Episode:
     direction = rng.choice(DIRECTIONS)
     steps = rng.randint(1, 3)
     before = (rng.randint(0, SIZE - 1), rng.randint(0, SIZE - 1))
-    after = _move(before, direction, steps, SIZE, SIZE)
-    if before == after:
-        after = _move(before, direction, min(steps + 1, 3), SIZE, SIZE)
+    after = before
+    for candidate_steps in range(1, 4):
+        candidate = _move(before, direction, candidate_steps, SIZE, SIZE)
+        if candidate != before:
+            after = candidate
+            steps = candidate_steps
+            break
+    if after == before:
+        for alt_direction in DIRECTIONS:
+            candidate = _move(before, alt_direction, 1, SIZE, SIZE)
+            if candidate != before:
+                after = candidate
+                direction = alt_direction
+                steps = 1
+                break
 
     input_grid = _blank(SIZE, SIZE)
     output_grid = _blank(SIZE, SIZE)
     input_grid[before[0]][before[1]] = color
     output_grid[after[0]][after[1]] = color
 
+    primary_weight, decoy_weight, lucidity = grid_common.trace_weights_for_knob(
+        knob,
+        primary="position_shift_like",
+        decoy="recolor_like",
+    )
+    confidence = round(0.78 + knob.level * 0.12, 3)
+    cell_in, cell_out = grid_common.grid_cell_spans(before, after)
+
     gold = GoldLabels(
+        spans=[cell_in, cell_out],
         frame_targets=[
-            FrameTarget(
-                frame_id="frame_position_shift",
-                frame_type="transform",
-                slot_targets=[
-                    FrameSlotTarget(
-                        "slot_before",
-                        "position_shift_like",
-                        [],
-                        {"pre_change_state_like": 0.8},
-                        0.88,
-                    ),
-                    FrameSlotTarget(
-                        "slot_after",
-                        "position_shift_like",
-                        [],
-                        {"post_change_state_like": 0.8},
-                        0.88,
-                    ),
-                    FrameSlotTarget(
-                        "slot_object",
-                        "shape_preserved_like",
-                        [],
-                        {"object_like": 0.7},
-                        0.86,
-                    ),
-                ],
-                confidence=0.88,
-            ),
+            grid_common.move_frame_target(
+                FRAME_ID,
+                before=before,
+                after=after,
+                confidence=confidence,
+            )
         ],
-        trace_activations=[
-            TraceTarget("position_shift_like", 0.88),
-            TraceTarget("shape_preserved_like", 0.93),
-            TraceTarget("color_preserved_like", 0.91),
-        ],
-        lucidity_target="COMMIT",
-        lucidity_rationale="cell moved, color unchanged",
+        scope_assignments=grid_common.grid_scope_assignments(
+            FRAME_ID,
+            same_cell=False,
+        ),
+        interference_gates=grid_common.grid_interference_gates(
+            FRAME_ID,
+            primary_trace="position_shift_like",
+            blocked_traces=("recolor_like",),
+        ),
+        trace_activations=grid_common.move_trace_activations(
+            primary_weight,
+            decoy_weight,
+            ambiguous=lucidity == "PRESERVE_AMBIGUITY",
+        ),
+        basin_families=grid_common.grid_basin("grid_position_shift", FRAME_ID, primary_weight),
+        lucidity_target=lucidity,
+        lucidity_rationale=(
+            "single-cell move is unambiguous"
+            if lucidity == "COMMIT"
+            else "move vs recolor traces still competing"
+        ),
         expected_answer=output_grid,
         validator_result=True,
     )
