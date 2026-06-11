@@ -13,9 +13,12 @@ from lucid.runtime.paths import (
     train_root,
 )
 from lucid.training.checkpoint.slots import (
+    archive_training_checkpoint,
     clear_loaded_checkpoint,
     loaded_checkpoint_ready,
     promote_to_loaded,
+    read_loaded_pointer,
+    resolve_checkpoint_ref,
     resolve_inference_checkpoint,
     resolve_training_checkpoint,
     save_training_snapshot,
@@ -92,3 +95,38 @@ def test_clear_loaded() -> None:
 def test_resolve_training_checkpoint_default() -> None:
     assert resolve_training_checkpoint("") == DEFAULT_TRAINING_CHECKPOINT
     assert resolve_training_checkpoint("checkpoints/local") == "checkpoints/local"
+
+
+def test_auto_archive_assigns_cp_names_in_order() -> None:
+    training = resolve_checkpoint(DEFAULT_TRAINING_CHECKPOINT)
+    _seed_checkpoint(training, steps=1, marker="a")
+    first = archive_training_checkpoint(command="train binding")
+    _seed_checkpoint(training, steps=2, marker="b")
+    second = archive_training_checkpoint(command="train dmf")
+
+    assert first["name"] == "cp_001"
+    assert second["name"] == "cp_002"
+    assert (resolve_checkpoint("checkpoints/saves/cp_001") / "manifest.json").is_file()
+
+
+def test_inference_resolves_cp_shorthand() -> None:
+    training = resolve_checkpoint(DEFAULT_TRAINING_CHECKPOINT)
+    _seed_checkpoint(training, steps=4, marker="cp-shorthand")
+    archive_training_checkpoint(name="cp_003", command="test")
+
+    assert resolve_checkpoint_ref("cp_003") == "checkpoints/saves/cp_003"
+    assert resolve_inference_checkpoint("cp_003") == "checkpoints/saves/cp_003"
+    assert resolve_inference_checkpoint("", cold=True) is None
+
+
+def test_pin_after_archive() -> None:
+    training = resolve_checkpoint(DEFAULT_TRAINING_CHECKPOINT)
+    _seed_checkpoint(training, steps=2, marker="pin-me")
+    record = archive_training_checkpoint(name="cp_010", label="bank pass", command="train binding")
+    promote_to_loaded(record["name"], label="bank pass")
+
+    assert loaded_checkpoint_ready()
+    pointer = read_loaded_pointer()
+    assert pointer is not None
+    assert pointer.get("save_name") == "cp_010"
+    assert resolve_inference_checkpoint("") == DEFAULT_LOADED_CHECKPOINT

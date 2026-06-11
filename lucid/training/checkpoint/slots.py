@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,26 +15,60 @@ from lucid.runtime.paths import (
     LOADED_CHECKPOINT_POINTER,
     resolve_checkpoint,
     resolve_train_path,
+    train_root,
 )
-from lucid.training.checkpoint.store import STORE_FILES, checkpoint_summary, load_checkpoint
+from lucid.training.checkpoint.registry import (
+    allocate_standard_name,
+    list_registry,
+    lookup_registry,
+    register_checkpoint,
+    sanitize_checkpoint_name,
+)
+from lucid.training.checkpoint.store import checkpoint_summary, load_checkpoint
+
+_CP_REF = re.compile(r"^cp_\d{3,}$")
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def checkpoint_ref(path: str | Path) -> str:
+    """Train-tree-relative checkpoint path (e.g. ``checkpoints/saves/cp_001``)."""
+    resolved = resolve_checkpoint(path)
+    try:
+        rel = resolved.relative_to(train_root())
+    except ValueError:
+        return str(path).replace("\\", "/")
+    return str(rel).replace("\\", "/")
+
+
+def resolve_checkpoint_ref(text: str | Path) -> str:
+    """Resolve shorthand (``cp_001``, ``training``, ``loaded``) to a train-tree path."""
+    return checkpoint_ref(_normalize_slot_path(text))
+
+
 def _normalize_slot_path(path: str | Path) -> Path:
     text = str(path).replace("\\", "/").strip()
     if text in {"training", "train"}:
         return resolve_checkpoint(DEFAULT_TRAINING_CHECKPOINT)
-    if text in {"loaded", "active", "savepoint"}:
+    if text in {"loaded", "active", "savepoint", "pinned"}:
         return resolve_checkpoint(DEFAULT_LOADED_CHECKPOINT)
     if text.startswith("saves/"):
         return resolve_checkpoint(f"checkpoints/{text}")
+    if text.startswith("checkpoints/saves/"):
+        return resolve_checkpoint(text)
+    if _CP_REF.match(text):
+        return resolve_checkpoint(f"checkpoints/saves/{text}")
     if "/" not in text and text not in {"local", "training", "loaded"}:
-        candidate = resolve_checkpoint(f"checkpoints/saves/{text}")
-        if (candidate / "manifest.json").is_file():
-            return candidate
+        by_save = resolve_checkpoint(f"checkpoints/saves/{text}")
+        if (by_save / "manifest.json").is_file():
+            return by_save
+        row = lookup_registry(text)
+        if row and Path(str(row.get("path", ""))).is_dir():
+            candidate = Path(str(row["path"]))
+            if (candidate / "manifest.json").is_file():
+                return candidate
     return resolve_checkpoint(path)
 
 
@@ -57,6 +92,7 @@ def write_loaded_pointer(
     *,
     source_path: Path,
     label: str = "",
+    save_name: str = "",
 ) -> dict[str, Any]:
     source = resolve_checkpoint(source_path)
     if not (source / "manifest.json").is_file():
@@ -68,6 +104,7 @@ def write_loaded_pointer(
         "loaded_at": _utc_now_iso(),
         "source_path": str(source),
         "source_label": label.strip(),
+        "save_name": save_name.strip(),
         "checkpoint_id": summary["checkpoint_id"],
         "training_steps": summary["training_steps"],
         "store_counts": summary["store_counts"],
@@ -102,16 +139,40 @@ def promote_to_loaded(source: str | Path = DEFAULT_TRAINING_CHECKPOINT, *, label
     """Copy a checkpoint tree into the loaded slot (inference save point)."""
     src = _normalize_slot_path(source)
     dst = copy_checkpoint_tree(src, DEFAULT_LOADED_CHECKPOINT)
-    write_loaded_pointer(source_path=src, label=label)
+    save_name = src.name if src.parent.name == "saves" else ""
+    write_loaded_pointer(source_path=src, label=label, save_name=save_name)
     return dst
 
 
-def save_training_snapshot(name: str) -> Path:
-    """Archive the current training checkpoint under ``checkpoints/saves/<name>``."""
-    clean = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name.strip())
-    clean = clean.strip("_") or "snapshot"
+def save_training_snapshot(name: str, *, source: str | Path = DEFAULT_TRAINING_CHECKPOINT) -> Path:
+    """Archive a checkpoint tree under ``checkpoints/saves/<name>``."""
+    clean = sanitize_checkpoint_name(name)
     dest = f"checkpoints/saves/{clean}"
-    return copy_checkpoint_tree(DEFAULT_TRAINING_CHECKPOINT, dest)
+    return copy_checkpoint_tree(source, dest)
+
+
+def archive_training_checkpoint(
+    *,
+    source: str | Path = DEFAULT_TRAINING_CHECKPOINT,
+    name: str | None = None,
+    label: str = "",
+    command: str = "",
+) -> dict[str, Any]:
+    """Archive a checkpoint to ``checkpoints/saves/cp_NNN`` (or explicit name) and register it."""
+    src = resolve_checkpoint(source)
+    if not (src / "manifest.json").is_file():
+        raise FileNotFoundError("checkpoint is empty — run training before archiving")
+
+    save_name = sanitize_checkpoint_name(name) if name else allocate_standard_name()
+    dest = save_training_snapshot(save_name, source=src)
+    summary = checkpoint_summary(load_checkpoint(dest, create=False))
+    return register_checkpoint(
+        name=save_name,
+        path=dest,
+        label=label,
+        command=command,
+        summary=summary,
+    )
 
 
 def clear_loaded_checkpoint() -> None:
@@ -125,7 +186,7 @@ def clear_loaded_checkpoint() -> None:
 def resolve_training_checkpoint(explicit: str | None = None) -> str:
     text = (explicit or "").strip()
     if text:
-        return text
+        return resolve_checkpoint_ref(text)
     return DEFAULT_TRAINING_CHECKPOINT
 
 
@@ -137,7 +198,7 @@ def resolve_inference_checkpoint(
     """Checkpoint path for ``lucid ask`` / ``lucid run`` (loaded save point unless overridden)."""
     text = (explicit or "").strip()
     if text:
-        return text
+        return resolve_checkpoint_ref(text)
     if cold:
         return None
     if loaded_checkpoint_ready():
@@ -182,6 +243,8 @@ def format_checkpoint_status() -> str:
     pointer = read_loaded_pointer()
     if loaded_checkpoint_ready() and pointer:
         lines.append(f"  from: {pointer.get('source_path', '?')}")
+        if pointer.get("save_name"):
+            lines.append(f"  save: {pointer['save_name']}")
         if pointer.get("source_label"):
             lines.append(f"  label: {pointer['source_label']}")
         lines.append(f"  loaded_at: {pointer.get('loaded_at', '?')}")
@@ -189,23 +252,39 @@ def format_checkpoint_status() -> str:
     else:
         lines.append("  (not loaded — lucid ask runs without memory until lucid checkpoint load)")
 
-    saves = list_named_saves()
-    lines.extend(["", f"named saves ({len(saves)})"])
-    if saves:
-        for name, path in saves:
-            lines.append(f"  {name}: {path}")
+    registry = list_registry()
+    lines.extend(["", f"standard saves ({len(registry)})"])
+    if registry:
+        for row in registry:
+            tag = " [loaded]" if pointer and row.get("name") == pointer.get("save_name") else ""
+            label = f" — {row['label']}" if row.get("label") else ""
+            cmd = f" ({row['command']})" if row.get("command") else ""
+            lines.append(
+                f"  {row['name']}: steps={row.get('training_steps', '?')}{label}{cmd}{tag}"
+            )
     else:
-        lines.append("  (none — lucid checkpoint save <name>)")
+        lines.append("  (none — lucid train creates cp_001 after each run)")
+
+    orphan_saves = [
+        (name, path)
+        for name, path in list_named_saves()
+        if not any(row.get("name") == name for row in registry)
+    ]
+    if orphan_saves:
+        lines.extend(["", f"other saves ({len(orphan_saves)})"])
+        for name, path in orphan_saves:
+            lines.append(f"  {name}: {path}")
 
     lines.extend(
         [
             "",
             "commands",
-            "  lucid checkpoint load              copy training → loaded",
-            "  lucid checkpoint load <save>       copy saves/<save> → loaded",
-            "  lucid checkpoint save <name>       archive training → saves/<name>",
+            "  lucid checkpoint load              copy training → loaded (pin for inference)",
+            "  lucid checkpoint load cp_001       pin a standard save for inference",
+            "  lucid checkpoint save <name>       manual archive training → saves/<name>",
             "  lucid checkpoint clear             drop loaded save point",
-            "  lucid ask \"…\" --checkpoint training   one-off use training weights",
+            "  lucid train … --pin              archive cp_NNN and pin it for inference",
+            "  lucid ask \"…\" --checkpoint cp_001   one-off use a specific save",
         ]
     )
     return "\n".join(lines)

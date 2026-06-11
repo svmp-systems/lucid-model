@@ -21,6 +21,7 @@ from lucid.training.checkpoint.store import (
     load_checkpoint,
     save_checkpoint,
 )
+from lucid.training.checkpoint.slots import archive_training_checkpoint, checkpoint_ref, promote_to_loaded
 from lucid.training.loop.orchestrator import (
     FailureDiagnosis,
     RunLog,
@@ -65,6 +66,36 @@ def _safe_part(value: str) -> str:
 
 def _new_run_id(prefix: str, checkpoint_id: str) -> str:
     return f"{_safe_part(prefix)}_{_safe_part(checkpoint_id)}_{uuid4().hex[:10]}"
+
+
+def _finalize_training(args: argparse.Namespace, *, command: str) -> dict[str, Any] | None:
+    """Archive training workspace to cp_NNN and optionally pin for inference."""
+    if args.dry_run:
+        return None
+
+    label = getattr(args, "save_label", "") or ""
+    save_as = getattr(args, "save_as", "") or ""
+    record: dict[str, Any] | None = None
+    if not getattr(args, "no_save", False):
+        record = archive_training_checkpoint(
+            source=args.checkpoint,
+            name=save_as or None,
+            label=label,
+            command=command,
+        )
+
+    if getattr(args, "pin", False):
+        if record:
+            promote_to_loaded(record["name"], label=label or str(record.get("label", "")))
+            record["pinned"] = True
+        else:
+            promote_to_loaded(args.checkpoint, label=label or command)
+            record = {
+                "pinned": True,
+                "name": checkpoint_ref(args.checkpoint),
+                "path": str(resolve_train_path(args.checkpoint)),
+            }
+    return record
 
 
 def _load_episodes(args: argparse.Namespace) -> list[Episode]:
@@ -213,22 +244,20 @@ def _run_module_training(args: argparse.Namespace) -> int:
         before=before_summary,
         after=after_summary,
     )
-    print(
-        json.dumps(
-            {
-                "target": args.target,
-                "checkpoint": args.checkpoint,
-                "audit_dir": str(run_dir),
-                "dry_run": args.dry_run,
-                "steps": len(results),
-                "updates": sum(1 for result in results if result.action == "UPDATE"),
-                "defers": sum(1 for result in results if result.action == "DEFER"),
-                "checkpoint_summary": checkpoint_summary(working_state),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    archived = _finalize_training(args, command=f"train {args.target}")
+    payload: dict[str, Any] = {
+        "target": args.target,
+        "checkpoint": args.checkpoint,
+        "audit_dir": str(run_dir),
+        "dry_run": args.dry_run,
+        "steps": len(results),
+        "updates": sum(1 for result in results if result.action == "UPDATE"),
+        "defers": sum(1 for result in results if result.action == "DEFER"),
+        "checkpoint_summary": checkpoint_summary(working_state),
+    }
+    if archived:
+        payload["archived_save"] = archived
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
@@ -447,21 +476,19 @@ def _run_global_training(args: argparse.Namespace) -> int:
         after=after_summary,
         governor_records=governor_records,
     )
-    print(
-        json.dumps(
-            {
-                "target": "global",
-                "checkpoint": args.checkpoint,
-                "audit_dir": str(run_dir),
-                "dry_run": args.dry_run,
-                "steps": len(results),
-                "promoted_updates": promoted,
-                "checkpoint_summary": checkpoint_summary(state),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    archived = _finalize_training(args, command="train global")
+    payload: dict[str, Any] = {
+        "target": "global",
+        "checkpoint": args.checkpoint,
+        "audit_dir": str(run_dir),
+        "dry_run": args.dry_run,
+        "steps": len(results),
+        "promoted_updates": promoted,
+        "checkpoint_summary": checkpoint_summary(state),
+    }
+    if archived:
+        payload["archived_save"] = archived
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
@@ -514,7 +541,11 @@ def _cmd_loop(args: argparse.Namespace) -> int:
             audit_dir=args.audit_dir,
         )
     orchestrator.run(max(1, int(args.steps)))
-    print(json.dumps(orchestrator.get_status(), indent=2, sort_keys=True))
+    status = orchestrator.get_status()
+    archived = _finalize_training(args, command="train loop")
+    if archived:
+        status["archived_save"] = archived
+    print(json.dumps(status, indent=2, sort_keys=True))
     if orchestrator.live_state.get("checkpoint_hook") is not None:
         print(json.dumps(orchestrator.live_state["checkpoint_hook"].summary(), indent=2, sort_keys=True))
     return 0
@@ -632,6 +663,26 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--steps", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Skip auto archive to checkpoints/saves/cp_NNN after training",
+    )
+    parser.add_argument(
+        "--save-as",
+        default="",
+        help="Archive as this name instead of the next cp_NNN",
+    )
+    parser.add_argument(
+        "--save-label",
+        default="",
+        help="Human note stored in the checkpoint registry",
+    )
+    parser.add_argument(
+        "--pin",
+        action="store_true",
+        help="After archive, copy the save into the loaded slot for lucid ask / run",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

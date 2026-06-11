@@ -6,7 +6,9 @@ import argparse
 import json
 import sys
 
+from lucid.training.checkpoint.registry import list_registry
 from lucid.training.checkpoint.slots import (
+    archive_training_checkpoint,
     clear_loaded_checkpoint,
     format_checkpoint_status,
     list_named_saves,
@@ -33,6 +35,7 @@ def _cmd_load(args: argparse.Namespace) -> int:
             {
                 "loaded": str(dest),
                 "source": pointer.get("source_path"),
+                "save": pointer.get("save_name"),
                 "label": pointer.get("source_label"),
                 "training_steps": pointer.get("training_steps"),
             },
@@ -45,11 +48,23 @@ def _cmd_load(args: argparse.Namespace) -> int:
 
 def _cmd_save(args: argparse.Namespace) -> int:
     try:
-        path = save_training_snapshot(args.name)
+        if args.from_training:
+            record = archive_training_checkpoint(
+                source="training",
+                name=args.name or None,
+                label=args.label,
+                command="lucid checkpoint save",
+            )
+            print(json.dumps(record, indent=2, sort_keys=True))
+        else:
+            if not args.name:
+                print("save name required (or use --from-training for next cp_NNN)", file=sys.stderr)
+                return 2
+            path = save_training_snapshot(args.name)
+            print(path)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(path)
     return 0
 
 
@@ -60,12 +75,22 @@ def _cmd_clear(_args: argparse.Namespace) -> int:
 
 
 def _cmd_list(_args: argparse.Namespace) -> int:
+    registry = list_registry()
+    if registry:
+        print("standard saves (cp_NNN):")
+        for row in registry:
+            label = f"\t{row['label']}" if row.get("label") else ""
+            cmd = f"\t({row['command']})" if row.get("command") else ""
+            print(f"{row['name']}\tsteps={row.get('training_steps', '?')}{label}{cmd}")
     saves = list_named_saves()
-    if not saves:
-        print("(no named saves under checkpoints/saves/)")
-        return 0
-    for name, path in saves:
-        print(f"{name}\t{path}")
+    known = {row.get("name") for row in registry}
+    other = [(name, path) for name, path in saves if name not in known]
+    if other:
+        print("\nother saves:")
+        for name, path in other:
+            print(f"{name}\t{path}")
+    if not registry and not other:
+        print("(no saves under checkpoints/saves/)")
     return 0
 
 
@@ -79,25 +104,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     load_p = sub.add_parser(
         "load",
-        help="Copy a checkpoint into the loaded slot (default: training workspace)",
+        help="Pin a checkpoint for inference (default: training workspace)",
     )
     load_p.add_argument(
         "source",
         nargs="?",
         default="training",
-        help="training | saves/<name> | <name> | checkpoints/…",
+        help="training | cp_001 | saves/<name> | checkpoints/…",
     )
     load_p.add_argument("--label", default="", help="Optional note stored in loaded.json")
     load_p.set_defaults(func=_cmd_load)
 
-    save_p = sub.add_parser("save", help="Archive training checkpoint to checkpoints/saves/<name>")
-    save_p.add_argument("name", help="Save name (e.g. bank-v1)")
+    save_p = sub.add_parser(
+        "save",
+        help="Archive training checkpoint to checkpoints/saves/<name> or next cp_NNN",
+    )
+    save_p.add_argument(
+        "name",
+        nargs="?",
+        default="",
+        help="Save name (default: next cp_NNN when --from-training)",
+    )
+    save_p.add_argument(
+        "--from-training",
+        action="store_true",
+        help="Archive from training workspace and register in cp_NNN registry",
+    )
+    save_p.add_argument("--label", default="", help="Human note for registry")
     save_p.set_defaults(func=_cmd_save)
 
     sub.add_parser("clear", help="Remove loaded save point (inference runs cold)").set_defaults(
         func=_cmd_clear
     )
-    sub.add_parser("list", help="List named saves").set_defaults(func=_cmd_list)
+    sub.add_parser("list", help="List standard cp_NNN saves and other archives").set_defaults(
+        func=_cmd_list
+    )
     return parser
 
 
