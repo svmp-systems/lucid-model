@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from lucid.audit.logger import AuditLogger, RunAuditManifest, StageAuditRef
+from lucid.audit.stage_summary import format_stage_summary_block
 
 
 def format_stage_ref(ref: StageAuditRef) -> str:
@@ -42,8 +43,8 @@ def print_run(run_dir: Path | str, *, stage: str | None = None) -> None:
         print(f"stage: {record.get('stage_name')}")
         print(f"headline: {summary.get('headline', '')}")
         print()
-        for line in summary.get("lines", []):
-            print(f"  {line}")
+        for line in format_stage_summary_block(summary, indent="  "):
+            print(line)
         if record.get("error_message"):
             print(f"\nerror: {record['error_message']}")
         return
@@ -58,8 +59,8 @@ def print_run(run_dir: Path | str, *, stage: str | None = None) -> None:
         record = json.loads((run_path / file_name).read_text(encoding="utf-8"))
         summary = record.get("summary") or {}
         print(f"--- {stage_key}: {summary.get('headline', '')} ---")
-        for line in summary.get("lines", []):
-            print(f"  {line}")
+        for line in format_stage_summary_block(summary, indent="  "):
+            print(line)
         print()
 
 

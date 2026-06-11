@@ -8,32 +8,34 @@ import sys
 from json import JSONDecodeError
 from pathlib import Path
 
-from lucid.audit.basins import write_basins_audit
-from lucid.audit.decoder import write_decoder_audit
-from lucid.audit.lucidity import write_lucidity_audit
-from lucid.cognition.decoder import run_decoder
-from lucid.cognition.lucidity import run_lucidity
-from lucid.audit.cue import write_cue_encoder_audit
+from lucid.audit.smoke import (
+    write_basins_audit,
+    write_binding_audit,
+    write_cue_encoder_audit,
+    write_decoder_audit,
+    write_lucidity_audit,
+)
+from lucid.cognition.output.decoder import run_decoder
+from lucid.cognition.output.lucidity import run_lucidity
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
-from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
-from lucid.cognition.projector import run_projector
+from lucid.cognition.pipe_orchestrator.runner import OrchestratorConfig, OrchestratorRunner
+from lucid.cognition.output.projector import run_projector
 from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.cognition.reasoning.interference import run_interference
-from lucid.cognition.reasoning.interference_learning import (
-    DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR,
+from lucid.cognition.reasoning.interference import (
+    DEFAULT_INTERFERENCE_LEARNING_AUDIT,
     DEFAULT_INTERFERENCE_STORE,
     learn_interference,
     load_learned_interference_links,
 )
-from lucid.audit.binding import write_binding_audit
 from lucid.ir.basins import BasinInput
 from lucid.ir.binding import BindingInput, BindingOutput
-from lucid.memory.dmf import load_dynamic_memory_field
+from lucid.cognition.memory.dmf import load_dynamic_memory_field
 from lucid.ir.binding import CandidateFrame
-from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState
+from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturityState, TaskIntent
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
@@ -55,24 +57,28 @@ from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEviden
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
 from lucid.ir.serde import from_json, to_json
 from lucid.ir.training import Episode
-from lucid.memory.dmf import DmfTraceRecord, DynamicMemoryField
-from lucid.training.dmf import learn_from_episode
-from lucid.training.orchestrator.orchestrator import (
+from lucid.cognition.memory.dmf import DmfTraceRecord, DynamicMemoryField
+from lucid.training.learn.dmf import learn_from_episode
+from lucid.training.loop.orchestrator import (
     BlameAssigner,
     RunLog,
     TrainingGovernor,
     UpdatePlanner,
     ValidationResult,
 )
-from lucid.paths import (
+from lucid.runtime.paths import (
+    DEFAULT_ASK_LATEST,
     DEFAULT_AUDIT_BINDING,
     DEFAULT_AUDIT_CUE_ENCODER,
     DEFAULT_AUDIT_DMF,
     DEFAULT_AUDIT_LUCIDITY,
+    DEFAULT_AUDIT_MEMORY,
     DEFAULT_AUDIT_RUNS,
+    DEFAULT_TRAINING_CHECKPOINT,
     smoke_audit_dir,
 )
-from lucid.training.quantization import (
+from lucid.training.checkpoint.slots import resolve_inference_checkpoint
+from lucid.training.learn.quant import (
     RetrievalQualitySample,
     binary_signature,
     measure_candidate_quality,
@@ -135,11 +141,134 @@ def _cmd_run(args: argparse.Namespace) -> int:
         config=OrchestratorConfig(
             audit_base_dir=args.audit_dir,
             perception=perception_cfg,
-            checkpoint=args.checkpoint,
+            checkpoint=resolve_inference_checkpoint(args.checkpoint, cold=args.cold) or "",
         )
     )
     run = runner.run_episode(episode)
     print(run.context.audit_dir or "(audit written)")
+    return 0
+
+
+def _cmd_run_batch(args: argparse.Namespace) -> int:
+    path = Path(args.episode)
+    if not path.exists():
+        print(f"missing file: {path}", file=sys.stderr)
+        return 2
+
+    from lucid.training.corpus.output import read_episodes
+
+    episodes = read_episodes(path)
+    if args.limit > 0:
+        episodes = episodes[: args.limit]
+
+    perception_cfg = PerceptionConfig.from_env()
+    if args.perception:
+        perception_cfg.backend = args.perception
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=args.audit_dir,
+            perception=perception_cfg,
+            checkpoint=resolve_inference_checkpoint(args.checkpoint, cold=args.cold) or "",
+        )
+    )
+
+    crashes = 0
+    for index, episode in enumerate(episodes, start=1):
+        try:
+            runner.run_episode(episode)
+        except Exception as exc:  # noqa: BLE001
+            crashes += 1
+            print(f"[{index}/{len(episodes)}] {episode.episode_id} crash: {exc}", file=sys.stderr)
+
+    print(json.dumps({"episodes": len(episodes), "crashes": crashes}, indent=2, sort_keys=True))
+    return 1 if crashes else 0
+
+
+def _cmd_ask(args: argparse.Namespace) -> int:
+    """Run the full pipeline on one sentence; print sentence, answer, compact audit."""
+    sentence = " ".join(args.sentence).strip()
+    if not sentence:
+        print("no sentence", file=sys.stderr)
+        return 2
+
+    from lucid.audit.ask_report import (
+        answer_from_pipeline_run,
+        episode_id_for_sentence,
+        write_ask_report,
+    )
+
+    episode = Episode(
+        episode_id=episode_id_for_sentence(sentence),
+        modality=Modality.TEXT,
+        raw_input=sentence,
+        task_intent=TaskIntent.ANSWER,
+    )
+
+    perception_cfg = PerceptionConfig.from_env()
+    if args.perception:
+        perception_cfg.backend = args.perception
+
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=args.audit_dir,
+            perception=perception_cfg,
+            checkpoint=resolve_inference_checkpoint(args.checkpoint, cold=args.cold) or "",
+        )
+    )
+    try:
+        run = runner.run_episode(episode)
+    except Exception as exc:  # noqa: BLE001 — surface pipeline failure to the user
+        print(f"pipeline failed: {exc}", file=sys.stderr)
+        return 1
+
+    answer = answer_from_pipeline_run(run)
+    lucidity = ""
+    if run.lucidity_output is not None:
+        decision = run.lucidity_output.decision
+        lucidity = decision.value if hasattr(decision, "value") else str(decision)
+
+    audit_dir = run.context.audit_dir
+    if not audit_dir:
+        print("audit directory missing after run", file=sys.stderr)
+        return 1
+    run_dir = Path(audit_dir)
+
+    paths = write_ask_report(
+        run_dir,
+        sentence=sentence,
+        answer=answer,
+        lucidity_decision=lucidity,
+        latest_path=args.latest or None,
+        write_latest=not args.no_latest,
+        extra_copy=args.out or None,
+    )
+    body = paths.run_report.read_text(encoding="utf-8").rstrip()
+    try:
+        print(body)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(body.encode(encoding, errors="replace").decode(encoding))
+    return 0
+
+
+def _cmd_edit(args: argparse.Namespace) -> int:
+    import json as json_lib
+
+    from lucid.cognition.memory.edit import edit_basin, edit_trace, list_basins, list_traces
+
+    if args.list == "traces":
+        print(json.dumps(list_traces(args.checkpoint), indent=2, sort_keys=True))
+        return 0
+    if args.list == "basins":
+        print(json.dumps(list_basins(args.checkpoint), indent=2, sort_keys=True))
+        return 0
+
+    patch = json_lib.loads(args.patch)
+    if args.kind == "trace":
+        result = edit_trace(args.checkpoint, args.record_id, patch=patch, audit_dir=args.audit_dir)
+    else:
+        result = edit_basin(args.checkpoint, args.record_id, patch=patch, audit_dir=args.audit_dir)
+    print(json.dumps({"store": result.store, "record_id": result.record_id, "audit_path": result.audit_path}, indent=2))
     return 0
 
 
@@ -783,14 +912,14 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         from lucid.audit.layout import write_train_readmes
 
         write_train_readmes()
-        print("wrote train/README.txt")
+        print("wrote lucid/training/tree/README.txt")
         return 0
     print("unknown audit command", file=sys.stderr)
     return 2
 
 
 def _cmd_gen(args: argparse.Namespace) -> int:
-    from lucid.training.generator.cli import main as gen_main
+    from lucid.training.corpus.cli import main as gen_main
 
     return gen_main(args.args)
 
@@ -842,9 +971,57 @@ def _cmd_train(args: argparse.Namespace) -> int:
     return train_main(args.args)
 
 
+def _cmd_checkpoint(args: argparse.Namespace) -> int:
+    from lucid.training.checkpoint.cli import main as checkpoint_main
+
+    return checkpoint_main(args.args)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lucid")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    ask_parser = sub.add_parser(
+        "ask",
+        help="One sentence through the full pipeline (sentence, answer, compact audit)",
+    )
+    ask_parser.add_argument(
+        "sentence",
+        nargs="+",
+        help='Words to run (quote spaces: lucid ask "go to the bank")',
+    )
+    ask_parser.add_argument(
+        "--audit-dir",
+        default=DEFAULT_AUDIT_RUNS,
+        help="Pipeline audit base directory",
+    )
+    ask_parser.add_argument("--perception", default="", choices=["", "rule", "llm"])
+    ask_parser.add_argument(
+        "--checkpoint",
+        default="",
+        help="Override inference checkpoint (default: loaded save point if set)",
+    )
+    ask_parser.add_argument(
+        "--cold",
+        action="store_true",
+        help="Run without any checkpoint even if a save point is loaded",
+    )
+    ask_parser.add_argument(
+        "--out",
+        default="",
+        help="Also write the full report to this path (e.g. last-ask.txt)",
+    )
+    ask_parser.add_argument(
+        "--latest",
+        default="",
+        help=f"Stable latest copy (default: {DEFAULT_ASK_LATEST} under train tree)",
+    )
+    ask_parser.add_argument(
+        "--no-latest",
+        action="store_true",
+        help="Do not update the stable latest.txt copy",
+    )
+    ask_parser.set_defaults(func=_cmd_ask)
 
     perceive_parser = sub.add_parser("perceive", help="Run perception on raw input")
     perceive_parser.add_argument("text", nargs="?", help="Raw text, or stdin when omitted")
@@ -865,8 +1042,43 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Audit base directory",
     )
     run_parser.add_argument("--perception", default="", choices=["", "rule", "llm"])
-    run_parser.add_argument("--checkpoint", default="", help="Checkpoint for runtime stores")
+    run_parser.add_argument(
+        "--checkpoint",
+        default="",
+        help="Override inference checkpoint (default: loaded save point if set)",
+    )
+    run_parser.add_argument(
+        "--cold",
+        action="store_true",
+        help="Run without any checkpoint even if a save point is loaded",
+    )
     run_parser.set_defaults(func=_cmd_run)
+
+    run_batch_parser = sub.add_parser("run-batch", help="Run many episodes from JSONL without crash")
+    run_batch_parser.add_argument("episode", help="Path to Episode JSONL")
+    run_batch_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_RUNS)
+    run_batch_parser.add_argument("--perception", default="", choices=["", "rule", "llm"])
+    run_batch_parser.add_argument(
+        "--checkpoint",
+        default="",
+        help="Override inference checkpoint (default: loaded save point if set)",
+    )
+    run_batch_parser.add_argument(
+        "--cold",
+        action="store_true",
+        help="Run without any checkpoint even if a save point is loaded",
+    )
+    run_batch_parser.add_argument("--limit", type=int, default=0)
+    run_batch_parser.set_defaults(func=_cmd_run_batch)
+
+    edit_parser = sub.add_parser("edit", help="Edit tracebank or basin_bank in a checkpoint")
+    edit_parser.add_argument("kind", choices=["trace", "basin"])
+    edit_parser.add_argument("record_id", nargs="?", default="")
+    edit_parser.add_argument("--checkpoint", default=DEFAULT_TRAINING_CHECKPOINT)
+    edit_parser.add_argument("--patch", default="{}", help="JSON object merged into the record")
+    edit_parser.add_argument("--list", default="", choices=["", "traces", "basins"])
+    edit_parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_MEMORY)
+    edit_parser.set_defaults(func=_cmd_edit)
 
     cue_parser = sub.add_parser("cue-encoder", help="Run cue encoder on text or a fixture")
     cue_parser.add_argument("text", nargs="?", help="Raw text; fixture is used when omitted")
@@ -937,7 +1149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     interference_learn_parser.add_argument(
         "--audit-dir",
-        default=str(DEFAULT_INTERFERENCE_LEARNING_AUDIT_DIR),
+        default=DEFAULT_INTERFERENCE_LEARNING_AUDIT,
         help="Folder for human and machine readable learning audit logs",
     )
     interference_learn_parser.add_argument(
@@ -1023,7 +1235,14 @@ def _build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("args", nargs=argparse.REMAINDER)
     train_parser.set_defaults(func=_cmd_train)
 
-    audit_parser = sub.add_parser("audit", help="List audits and checkpoints under train/")
+    checkpoint_parser = sub.add_parser(
+        "checkpoint",
+        help="Load/save inference save points (separate from training workspace)",
+    )
+    checkpoint_parser.add_argument("args", nargs=argparse.REMAINDER)
+    checkpoint_parser.set_defaults(func=_cmd_checkpoint)
+
+    audit_parser = sub.add_parser("audit", help="List audits and checkpoints under lucid/training/tree/")
     audit_sub = audit_parser.add_subparsers(dest="audit_cmd", required=True)
 
     audit_list = audit_sub.add_parser("list", help="List recent audit runs")
@@ -1039,7 +1258,7 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_ckpt = audit_sub.add_parser("checkpoints", help="List checkpoint directories")
     audit_ckpt.set_defaults(func=_cmd_audit, audit_cmd="checkpoints")
 
-    audit_layout = audit_sub.add_parser("layout", help="Write train/README.txt")
+    audit_layout = audit_sub.add_parser("layout", help="Write lucid/training/tree/README.txt")
     audit_layout.set_defaults(func=_cmd_audit, audit_cmd="layout")
 
     inspect_parser = sub.add_parser("inspect", help="Inspect audit output")
@@ -1059,7 +1278,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     scaling_export = scaling_sub.add_parser("export", help="CSV aggregate by scale_id")
     scaling_export.add_argument("--scale-id", default="", help="Filter before export")
-    scaling_export.add_argument("--out", default="", help="Filename under audit/scaling/exports/")
+    scaling_export.add_argument(
+        "--out",
+        default="",
+        help="Filename under train/audit/scaling/exports/",
+    )
     scaling_export.set_defaults(func=_cmd_scaling_export)
 
     scaling_path = scaling_sub.add_parser("path", help="Print points.jsonl path")
@@ -1067,9 +1290,50 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_KNOWN_COMMANDS = frozenset(
+    {
+        "ask",
+        "perceive",
+        "run",
+        "run-batch",
+        "edit",
+        "cue-encoder",
+        "context-op",
+        "interference",
+        "interference-learn",
+        "basins",
+        "lucidity",
+        "decoder",
+        "projector",
+        "bind",
+        "dmf",
+        "governor",
+        "quantization",
+        "train",
+        "checkpoint",
+        "audit",
+        "inspect",
+        "gen",
+        "scaling",
+    }
+)
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """``lucid "your sentence"`` → ``lucid ask "your sentence"``."""
+    if not argv:
+        return argv
+    if argv[0] in _KNOWN_COMMANDS:
+        return argv
+    if argv[0].startswith("-"):
+        return ["ask", *argv]
+    return ["ask", *argv]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(_normalize_argv(raw))
     return args.func(args)
 
 

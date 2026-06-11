@@ -17,7 +17,7 @@ from lucid.ir.basins import (
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.context_op import ContextFrame, LocalBasinPressure
 from lucid.ir.interference import InterferenceOutput
-from lucid.memory.basin_bank import BasinBank, BasinBankRecord, load_basin_bank, normalize_family_hint
+from lucid.cognition.memory.basin_bank import BasinBank, BasinBankRecord, load_basin_bank, normalize_family_hint
 
 _MIN_AFFINITY = 0.08
 _MIN_PRESSURE = 0.12

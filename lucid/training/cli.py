@@ -11,26 +11,37 @@ from typing import Any
 from uuid import uuid4
 
 from lucid.audit.logger import content_hash
+from lucid.runtime.paths import DEFAULT_AUDIT_TRAINING_RUNS, DEFAULT_AUDIT_VALIDATION, DEFAULT_TRAINING_CHECKPOINT, resolve_train_path
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
-from lucid.training import adapters
-from lucid.training.checkpoints import (
+from lucid.training.corpus import adapters
+from lucid.training.checkpoint.store import (
     CheckpointState,
     checkpoint_summary,
     load_checkpoint,
     save_checkpoint,
 )
-from lucid.training.orchestrator.orchestrator import (
+from lucid.training.loop.orchestrator import (
     FailureDiagnosis,
     RunLog,
     TrainingGovernor,
     UpdatePlanner,
     ValidationResult,
 )
-from lucid.training.trainers import get_trainer, trainer_names
+from lucid.training.modules import get_trainer, trainer_names
 from dataclasses import replace
 
-from lucid.training.trainers.base import TrainingResult, utc_now_iso
+from lucid.training.modules.base import TrainingResult, utc_now_iso
+from lucid.training.validate.gold import (
+    GoldEpisodeValidator,
+    L3ModuleGoldValidator,
+    to_training_episode,
+    validate_episode_pack,
+)
+from lucid.training.loop.promotion import CheckpointPromotionHook
+from lucid.training.loop.pipeline import PipelineRunExecutor
+from lucid.training.loop.orchestrator import TrainingOrchestrator
+from lucid.training.loop.pipeline import _PipelineStage
 
 
 MODULE_TO_DIAGNOSIS = {
@@ -177,7 +188,7 @@ def _run_module_training(args: argparse.Namespace) -> int:
     episodes = _bounded_episodes(_load_episodes(args), args.steps)
     state = load_checkpoint(args.checkpoint, create=True)
     before_summary = checkpoint_summary(state)
-    run_dir = Path(args.audit_dir) / _new_run_id(args.target, state.checkpoint_id)
+    run_dir = resolve_train_path(args.audit_dir) / _new_run_id(args.target, state.checkpoint_id)
 
     results: list[TrainingResult] = []
     working_state = copy.deepcopy(state) if args.dry_run else state
@@ -371,7 +382,7 @@ def _run_global_training(args: argparse.Namespace) -> int:
     state = load_checkpoint(args.checkpoint, create=True)
     before_summary = checkpoint_summary(state)
     governor = TrainingGovernor()
-    run_dir = Path(args.audit_dir) / _new_run_id("global", state.checkpoint_id)
+    run_dir = resolve_train_path(args.audit_dir) / _new_run_id("global", state.checkpoint_id)
     results: list[TrainingResult] = []
     governor_records: list[dict[str, Any]] = []
     promoted = 0
@@ -457,7 +468,8 @@ def _run_global_training(args: argparse.Namespace) -> int:
 def _cmd_list(_args: argparse.Namespace) -> int:
     for name in trainer_names():
         print(name)
-    print("global")
+    for command in ("global", "loop", "validate", "golden"):
+        print(command)
     return 0
 
 
@@ -467,13 +479,111 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _training_episodes(args: argparse.Namespace) -> list:
+    episodes = _load_episodes(args)
+    training = [to_training_episode(episode) for episode in episodes]
+    for row in training:
+        row.validator_type = "gold_episode"
+    return training
+
+
+def _cmd_loop(args: argparse.Namespace) -> int:
+    training = _training_episodes(args)
+    executor = PipelineRunExecutor(
+        checkpoint=args.checkpoint,
+        audit_base_dir=args.audit_dir,
+        perception_backend=args.perception,
+    )
+    orchestrator = TrainingOrchestrator(
+        _PipelineStage("perception"),
+        _PipelineStage("cue_encoder"),
+        _PipelineStage("dmf"),
+        _PipelineStage("binding"),
+        _PipelineStage("context_op"),
+        _PipelineStage("interference"),
+        _PipelineStage("lucidity"),
+        _PipelineStage("projector"),
+        _PipelineStage("decoder"),
+        training,
+        audit_base_dir=args.audit_dir,
+        executor=executor,
+    )
+    if not args.dry_run:
+        orchestrator.live_state["checkpoint_hook"] = CheckpointPromotionHook(
+            args.checkpoint,
+            audit_dir=args.audit_dir,
+        )
+    orchestrator.run(max(1, int(args.steps)))
+    print(json.dumps(orchestrator.get_status(), indent=2, sort_keys=True))
+    if orchestrator.live_state.get("checkpoint_hook") is not None:
+        print(json.dumps(orchestrator.live_state["checkpoint_hook"].summary(), indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    episodes_path = args.episodes
+    if not episodes_path:
+        from lucid.training.corpus.output import build_phase1_pack
+        from lucid.runtime.paths import train_root
+
+        out = train_root() / "data/generated/phase1"
+        build_phase1_pack(out, seed=42)
+        episodes_path = str(out / "all.jsonl")
+    report = validate_episode_pack(
+        episodes_path,
+        checkpoint=args.checkpoint,
+        audit_dir=args.audit_dir,
+        limit=max(0, int(args.limit)),
+    )
+    out_path = Path(args.report) if args.report else None
+    if out_path:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    if report["crashes"] > 0:
+        return 1
+    if args.require_l3:
+        failed = [row for row in report.get("l3_module_gold", []) if not row.get("passed")]
+        if failed:
+            return 2
+    return 0
+
+
+def _cmd_golden(args: argparse.Namespace) -> int:
+    from lucid.training.corpus.engine import AmbiguityKnob, rng_for_seed
+    from lucid.training.corpus.recipes import bank_destination, grid_move
+
+    episodes = []
+    if "bank" in args.suite:
+        episodes.append(bank_destination.make(rng_for_seed(7), AmbiguityKnob(0.9)))
+    if "grid" in args.suite:
+        episodes.append(grid_move.make(rng_for_seed(9), AmbiguityKnob(0.95)))
+    validator = GoldEpisodeValidator()
+    from lucid.cognition.pipe_orchestrator.runner import OrchestratorConfig, OrchestratorRunner
+    from lucid.cognition.input.perception import PerceptionConfig
+
+    runner = OrchestratorRunner(
+        config=OrchestratorConfig(
+            audit_base_dir=args.audit_dir,
+            perception=PerceptionConfig(backend="rule", write_audit=False),
+            checkpoint=args.checkpoint or None,
+        )
+    )
+    reports = []
+    for episode in episodes:
+        run = runner.run_episode(episode)
+        reports.append(validator.evaluate_run(run, episode))
+    print(json.dumps([{"episode_id": r.episode_id, "success": r.success, "signals": r.failure_signals} for r in reports], indent=2))
+    return 0 if all(report.success for report in reports) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lucid train")
     sub = parser.add_subparsers(dest="target", required=True)
     sub.add_parser("list", help="List trainable modules").set_defaults(func=_cmd_list)
 
     status_p = sub.add_parser("status", help="Inspect checkpoint summary")
-    status_p.add_argument("--checkpoint", default="checkpoints/local")
+    status_p.add_argument("--checkpoint", default=DEFAULT_TRAINING_CHECKPOINT)
     status_p.set_defaults(func=_cmd_status)
 
     for name in trainer_names():
@@ -491,14 +601,34 @@ def build_parser() -> argparse.ArgumentParser:
     global_p = sub.add_parser("global", help="Run governor-directed global training")
     _add_common_args(global_p)
     global_p.set_defaults(func=_run_global_training)
+
+    loop_p = sub.add_parser("loop", help="Run training orchestrator on the real pipeline")
+    _add_common_args(loop_p)
+    loop_p.add_argument("--perception", default="rule", choices=["rule", "llm"])
+    loop_p.set_defaults(func=_cmd_loop)
+
+    validate_p = sub.add_parser("validate", help="Score episodes against generator gold (L3)")
+    validate_p.add_argument("--episodes", default="")
+    validate_p.add_argument("--checkpoint", default=DEFAULT_TRAINING_CHECKPOINT)
+    validate_p.add_argument("--audit-dir", default=DEFAULT_AUDIT_VALIDATION)
+    validate_p.add_argument("--limit", type=int, default=0)
+    validate_p.add_argument("--report", default="")
+    validate_p.add_argument("--require-l3", action="store_true")
+    validate_p.set_defaults(func=_cmd_validate)
+
+    golden_p = sub.add_parser("golden", help="Run named phase-1 golden fixtures")
+    golden_p.add_argument("--suite", nargs="+", default=["bank", "grid"], choices=["bank", "grid"])
+    golden_p.add_argument("--checkpoint", default=DEFAULT_TRAINING_CHECKPOINT)
+    golden_p.add_argument("--audit-dir", default=DEFAULT_AUDIT_VALIDATION)
+    golden_p.set_defaults(func=_cmd_golden)
     return parser
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--episodes", default="", help="Episode JSONL path")
     parser.add_argument("--fixture", default="phase1-mini", choices=["phase1-mini", "bank"])
-    parser.add_argument("--checkpoint", default="checkpoints/local")
-    parser.add_argument("--audit-dir", default="audit/training")
+    parser.add_argument("--checkpoint", default=DEFAULT_TRAINING_CHECKPOINT)
+    parser.add_argument("--audit-dir", default=DEFAULT_AUDIT_TRAINING_RUNS)
     parser.add_argument("--steps", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
