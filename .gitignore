@@ -218,21 +218,23 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Local pipeline audits (never commit run trees)
-audit/
-
-# Local checkpoints at repo root (train/checkpoints/ is under /train/**)
+# Local checkpoints at repo root (canonical tree is lucid/training/tree/)
 checkpoints/
 
-# Local training tree: weights, episodes, audits (README + tests may be committed)
-/train/**
-!/train/README.txt
-!/train/tests/
-!/train/tests/**
-# Re-ignore bytecode/caches inside train/tests (negation above would otherwise include them)
-train/tests/**/__pycache__/
-train/tests/**/*.py[cod]
-train/tests/**/.pytest_cache/
+# Stray legacy folders — must not be used (see lucid.runtime.paths.train_root)
+/train/
+/tests/
+/audit/
+
+# Local artifact tree (gitignored)
+/lucid/training/tree/**
+
+# Pytest sources (committed)
+!/lucid/training/tests/
+!/lucid/training/tests/**
+lucid/training/tests/**/__pycache__/
+lucid/training/tests/**/*.py[cod]
+lucid/training/tests/**/.pytest_cache/
 
 # Lucid generator output (rebuild with lucid-gen; recipes stay in git)
 data/generated/

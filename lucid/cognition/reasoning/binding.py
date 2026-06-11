@@ -22,7 +22,7 @@ from lucid.ir.perception import (
     ChangeHint,
     PerceptualEvidenceGraph,
 )
-from lucid.memory.dmf import tracebank_from_checkpoint
+from lucid.cognition.memory.dmf import tracebank_from_checkpoint
 
 _TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -65,7 +65,9 @@ class BindingOperator:
         self.config = config
         self._affordances = config.affordances
         if self._affordances is None and config.checkpoint:
-            path = Path(config.checkpoint)
+            from lucid.runtime.paths import resolve_checkpoint
+
+            path = resolve_checkpoint(config.checkpoint)
             if path.exists():
                 self._affordances = _load_affordances(path)
 
@@ -79,6 +81,7 @@ class BindingOperator:
             dmf.active_traces,
         )
         unit_by_id = {unit.unit_id: unit for unit in graph.candidate_units}
+        unit_order = {unit.unit_id: index for index, unit in enumerate(graph.candidate_units)}
         unit_traces = _unit_trace_weights(cue, cue_to_trace, dmf.active_traces, unit_by_id)
         polysemous_units = _polysemous_unit_ids(graph)
 
@@ -95,6 +98,7 @@ class BindingOperator:
                 graph=graph,
                 dmf=dmf,
                 unit_by_id=unit_by_id,
+                unit_order=unit_order,
                 unit_traces=unit_traces,
                 polysemous_units=polysemous_units,
                 affordances=affordances,
@@ -110,6 +114,7 @@ class BindingOperator:
                     graph=graph,
                     dmf=dmf,
                     unit_by_id=unit_by_id,
+                    unit_order=unit_order,
                     unit_traces=unit_traces,
                     polysemous_units=polysemous_units,
                     cue_to_trace=cue_to_trace,
@@ -143,6 +148,7 @@ class BindingOperator:
         graph: PerceptualEvidenceGraph,
         dmf: DmfOutput,
         unit_by_id: dict[str, CandidateUnit],
+        unit_order: dict[str, int],
         unit_traces: dict[str, dict[str, float]],
         polysemous_units: set[str],
         affordances: dict[str, Any],
@@ -172,7 +178,7 @@ class BindingOperator:
                     trace_scores[trace.trace_id] = trace.activation
 
         ranked_traces = sorted(trace_scores.items(), key=lambda item: (-item[1], item[0]))
-        for slot_index, unit_id in enumerate(_ordered_unit_ids(member_refs, unit_by_id)):
+        for slot_index, unit_id in enumerate(_ordered_unit_ids(member_refs, unit_by_id, unit_order)):
             unit = unit_by_id[unit_id]
             slot_id = f"slot_{slot_index:02d}"
             slot_evidence_refs[slot_id] = [unit_id]
@@ -212,7 +218,9 @@ class BindingOperator:
             role_assignments=slot_assignments,
             slot_evidence_refs=slot_evidence_refs,
             slot_affinity_hints=slot_affinity_hints,
-            member_evidence_refs=sorted(set(member_refs)),
+            member_evidence_refs=list(
+                dict.fromkeys(_ordered_unit_ids(member_refs, unit_by_id, unit_order))
+            ),
             confidence=round(confidence, 3),
             unresolved_slot_names=sorted(set(unresolved)),
             supporting_trace_ids=sorted(set(supporting)),
@@ -225,6 +233,7 @@ class BindingOperator:
         graph: PerceptualEvidenceGraph,
         dmf: DmfOutput,
         unit_by_id: dict[str, CandidateUnit],
+        unit_order: dict[str, int],
         unit_traces: dict[str, dict[str, float]],
         polysemous_units: set[str],
         cue_to_trace: dict[str, str],
@@ -241,6 +250,7 @@ class BindingOperator:
             graph=graph,
             dmf=dmf,
             unit_by_id=unit_by_id,
+            unit_order=unit_order,
             unit_traces=unit_traces,
             polysemous_units=polysemous_units,
             affordances=_empty_affordances(),
@@ -384,7 +394,11 @@ def _seeds_from_units_and_references(
         if _is_verb_like(unit)
     ]
     if len(verb_units) >= 2:
-        ordered = sorted(units, key=_position_key)
+        unit_order = {unit.unit_id: index for index, unit in enumerate(units)}
+        ordered = sorted(
+            units,
+            key=lambda unit: _position_key(unit, unit_order.get(unit.unit_id, 999)),
+        )
         pivot = ordered.index(verb_units[1])
         first_units = {unit.unit_id for unit in ordered[:pivot]}
         second_units = {unit.unit_id for unit in ordered[pivot:]}
@@ -605,24 +619,28 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
-def _position_key(unit: CandidateUnit) -> tuple[int, str, str]:
+def _position_key(unit: CandidateUnit, order_index: int) -> tuple[int, int, str]:
     raw = str(unit.position_or_time or "").strip()
     try:
         position = int(raw)
     except ValueError:
         position = 0
-    return position, unit.unit_id, unit.surface
+    return position, order_index, unit.surface.lower()
 
 
 def _ordered_unit_ids(
     unit_ids: list[str],
     unit_by_id: dict[str, CandidateUnit],
+    unit_order: dict[str, int],
 ) -> list[str]:
     return sorted(
         unit_ids,
-        key=lambda unit_id: _position_key(unit_by_id[unit_id])
+        key=lambda unit_id: _position_key(
+            unit_by_id[unit_id],
+            unit_order.get(unit_id, 999),
+        )
         if unit_id in unit_by_id
-        else (0, unit_id, ""),
+        else (0, 999, unit_id),
     )
 
 

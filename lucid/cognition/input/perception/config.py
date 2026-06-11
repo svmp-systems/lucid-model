@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from lucid.paths import DEFAULT_AUDIT_PERCEPTION
+from lucid.runtime.paths import DEFAULT_AUDIT_PERCEPTION
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:

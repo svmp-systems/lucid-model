@@ -1,4 +1,4 @@
-"""Scaling observatory — cost/quality receipts under audit/scaling/ (scoped spec)."""
+"""Scaling observatory — cost/quality receipts under train/audit/scaling/ (scoped spec)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from lucid.audit.sanitize import sanitize_audit_value
 from lucid.ir.pipeline import PipelineRun
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
-from lucid.paths import DEFAULT_AUDIT_SCALING
+from lucid.runtime.paths import DEFAULT_AUDIT_SCALING, resolve_train_path
 
 # --- types ---
 
@@ -54,10 +54,14 @@ class ScalingPoint:
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
+def _default_scaling_data_dir() -> Path:
+    return resolve_train_path(DEFAULT_AUDIT_SCALING)
+
+
 @dataclass(slots=True)
 class ScalingConfig:
     enabled: bool = True
-    data_dir: Path = Path(DEFAULT_AUDIT_SCALING)
+    data_dir: Path = field(default_factory=_default_scaling_data_dir)
     build_phase: int = 1
     hardware_class: str = "local"
 
@@ -79,7 +83,7 @@ class ScalingConfig:
             phase = 1
         return cls(
             enabled=enabled,
-            data_dir=Path(base),
+            data_dir=resolve_train_path(base),
             build_phase=phase,
             hardware_class=os.environ.get("LUCID_HARDWARE_CLASS", "local").strip() or "local",
         )

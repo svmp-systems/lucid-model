@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from lucid.paths import (
+from lucid.runtime.paths import (
     DEFAULT_AUDIT_RUNS,
     DEFAULT_AUDIT_SCALING,
     DEFAULT_AUDIT_SMOKE,
     DEFAULT_AUDIT_TRAINING_RUNS,
+    resolve_train_path,
     train_root,
 )
 
@@ -42,12 +43,13 @@ class AuditRunRef:
 
 def audit_kind_root(kind: AuditKind, module: str = "") -> Path:
     if kind == "smoke":
-        return train_root() / DEFAULT_AUDIT_SMOKE / module if module else train_root() / DEFAULT_AUDIT_SMOKE
+        base = resolve_train_path(DEFAULT_AUDIT_SMOKE)
+        return base / module if module else base
     if kind == "training":
-        return train_root() / DEFAULT_AUDIT_TRAINING_RUNS
+        return resolve_train_path(DEFAULT_AUDIT_TRAINING_RUNS)
     if kind == "pipeline":
-        return train_root() / DEFAULT_AUDIT_RUNS
-    return train_root() / DEFAULT_AUDIT_SCALING
+        return resolve_train_path(DEFAULT_AUDIT_RUNS)
+    return resolve_train_path(DEFAULT_AUDIT_SCALING)
 
 
 def _headline_from_manifest(manifest_path: Path) -> str:
@@ -83,7 +85,7 @@ def list_runs(
     limit: int = 30,
 ) -> list[AuditRunRef]:
     if kind == "scaling":
-        points = train_root() / DEFAULT_AUDIT_SCALING / "points.jsonl"
+        points = resolve_train_path(DEFAULT_AUDIT_SCALING) / "points.jsonl"
         if points.is_file():
             lines = [ln for ln in points.read_text(encoding="utf-8").splitlines() if ln.strip()]
             return [
@@ -170,7 +172,9 @@ def write_train_readmes() -> None:
             [
                 "Lucid training artifacts (local only — not committed except this file)",
                 "",
-                "checkpoints/local/     default weights",
+                "checkpoints/training/   mutable training workspace (lucid train)",
+                "checkpoints/loaded/     inference save point (lucid checkpoint load)",
+                "checkpoints/saves/      named archives (lucid checkpoint save)",
                 "audit/runs/smoke/      CLI smoke audits (readable folder names)",
                 "audit/runs/training/   lucid train module runs",
                 "audit/runs/pipeline/   lucid run full pipeline",

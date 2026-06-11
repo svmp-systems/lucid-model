@@ -10,6 +10,7 @@ from typing import Any, Callable
 from lucid.audit.logger import content_hash
 from lucid.audit.sanitize import sanitize_audit_value
 from lucid.ir.serde import to_dict
+from lucid.runtime.paths import resolve_train_path
 
 
 def utc_now_iso() -> str:
@@ -32,8 +33,7 @@ def smoke_run_dir(
     label: str = "run",
     audit_base_dir: str | Path,
 ) -> tuple[Path, str]:
-    root = Path(audit_base_dir)
-    root.mkdir(parents=True, exist_ok=True)
+    root = resolve_train_path(audit_base_dir, mkdir=True)
     run_id = new_run_id(label=label)
     run_dir = root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)

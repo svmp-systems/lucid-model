@@ -87,10 +87,39 @@ def perceive(
     cfg = config or PerceptionConfig.from_env()
     modality = inp.modality if isinstance(inp.modality, Modality) else Modality(str(inp.modality))
     if cfg.backend == "llm":
-        return perceive_llm(inp, cfg, context=context)
+        graph = perceive_llm(inp, cfg, context=context)
+        if isinstance(inp.raw_payload, str):
+            infer_unit_positions(graph, inp.raw_payload)
+        return graph
     if modality == Modality.GRID:
         return _perceive_grid(inp)
-    return _perceive_text(inp)
+    graph = _perceive_text(inp)
+    if isinstance(inp.raw_payload, str):
+        infer_unit_positions(graph, inp.raw_payload)
+    return graph
+
+
+def infer_unit_positions(graph: PerceptualEvidenceGraph, raw_text: str) -> None:
+    """Fill missing span offsets so downstream binding keeps sentence order."""
+    text = raw_text.strip()
+    if not text:
+        return
+    cursor = 0
+    for unit in graph.candidate_units:
+        raw = str(unit.position_or_time or "").strip()
+        try:
+            int(raw)
+            continue
+        except ValueError:
+            pass
+        surface = (unit.surface or "").strip()
+        if not surface:
+            continue
+        pattern = re.compile(r"\b" + re.escape(surface) + r"\b", re.I)
+        match = pattern.search(text, cursor) or pattern.search(text)
+        if match:
+            unit.position_or_time = str(match.start())
+            cursor = match.end()
 
 
 def _perceive_text(inp: PerceptionInput) -> PerceptualEvidenceGraph:
@@ -242,6 +271,7 @@ def _perceive_grid(inp: PerceptionInput) -> PerceptualEvidenceGraph:
 __all__ = [
     "PerceptionConfig",
     "perceive",
+    "infer_unit_positions",
     "graph_from_dict",
     "compact_graph",
     "to_compact_json",
