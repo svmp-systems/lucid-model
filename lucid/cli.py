@@ -999,7 +999,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument(
         "--checkpoint",
         default="",
-        help="Override inference checkpoint (default: loaded save point if set)",
+        help="Checkpoint override: cp_001, training, loaded, or path (default: pinned loaded save)",
     )
     ask_parser.add_argument(
         "--cold",
@@ -1045,7 +1045,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--checkpoint",
         default="",
-        help="Override inference checkpoint (default: loaded save point if set)",
+        help="Checkpoint override: cp_001, training, loaded, or path (default: pinned loaded save)",
     )
     run_parser.add_argument(
         "--cold",
@@ -1061,7 +1061,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_batch_parser.add_argument(
         "--checkpoint",
         default="",
-        help="Override inference checkpoint (default: loaded save point if set)",
+        help="Checkpoint override: cp_001, training, loaded, or path (default: pinned loaded save)",
     )
     run_batch_parser.add_argument(
         "--cold",

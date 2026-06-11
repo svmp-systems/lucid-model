@@ -5,8 +5,9 @@ Run tests:
 
 Artifact root (tree/):
   checkpoints/training/   mutable weights (`lucid train` writes here)
-  checkpoints/loaded/     inference save point (`lucid checkpoint load`)
-  checkpoints/saves/      named snapshots (`lucid checkpoint save <name>`)
+  checkpoints/loaded/     pinned inference save (`lucid checkpoint load` / `lucid train --pin`)
+  checkpoints/saves/        standard archives cp_001, cp_002, … (auto after each train run)
+  checkpoints/saves/registry.json   human-readable save index
   data/generated/         episode JSONL (`lucid-gen pack`)
   audit/runs/training/    training step audits
   audit/runs/pipeline/    pipeline run audits
