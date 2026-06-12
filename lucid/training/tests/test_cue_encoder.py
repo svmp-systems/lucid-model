@@ -6,7 +6,6 @@ from pathlib import Path
 from lucid.audit.smoke import write_cue_encoder_audit
 from lucid.cli import main as lucid_main
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
-from lucid.cognition.input.cue.encoder import expand_cue_aliases
 from lucid.cognition.input.perception import PerceptionConfig, perceive
 from lucid.ir.common import ComputePolicy, Modality
 from lucid.ir.cue import CueEncoderInput
@@ -32,14 +31,6 @@ def _bank_cue_input() -> CueEncoderInput:
 
 def _ids(cloud) -> list[str]:
     return [request.trace_id for request in cloud.primitive_trace_activations]
-
-
-def test_expand_cue_aliases_maps_training_phrases_to_head_words():
-    assert expand_cue_aliases("some money") == frozenset({"some_money", "money"})
-    assert expand_cue_aliases("while kayaking") == frozenset({"while_kayaking", "kayaking"})
-    assert expand_cue_aliases("the cash") == frozenset({"the_cash", "cash"})
-    assert expand_cue_aliases("money") == frozenset({"money"})
-    assert expand_cue_aliases("financial_action_like") == frozenset({"financial_action_like"})
 
 
 def test_cue_encoder_compiles_sparse_surface_relation_and_ambiguity_cues():
@@ -81,10 +72,10 @@ def test_cue_encoder_output_feeds_existing_dmf_cue_affinity_index():
 
     assert {"t-money", "t-bank", "t-water"} == active
     assert out.coverage_score > 0.0
-    assert out.audit_log["retrieval_mode"] == "indexed_top_k"
+    assert out.audit_log["retrieval_mode"] == "activated_threshold_filter"
 
 
-def test_cue_encoder_uses_checkpoint_feature_index_without_dropping_surface_cue(tmp_path: Path):
+def test_cue_encoder_evidence_compile_does_not_apply_learned_map_routes(tmp_path: Path):
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     (checkpoint / "cue_encoder_map.json").write_text(
@@ -110,38 +101,8 @@ def test_cue_encoder_uses_checkpoint_feature_index_without_dropping_surface_cue(
     primitive_ids = _ids(cloud)
 
     assert "bank" in primitive_ids
-    assert "river_location_like" in primitive_ids
-    learned = next(
-        request for request in cloud.primitive_trace_activations if request.trace_id == "river_location_like"
-    )
-    assert learned.keep_alive is True
-    assert learned.evidence_refs == ["u_bank"]
-
-
-def test_cue_encoder_keeps_structural_words_available_for_learned_routes(tmp_path: Path):
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "cue_encoder_map.json").write_text(
-        json.dumps(
-            {
-                "feature_index": {
-                    "surface:it": [{"cue_key": "coreference_like", "weight": 0.8}],
-                    "marker_surface:in": [{"cue_key": "locative_relation_like", "weight": 0.7}],
-                },
-                "relation_index": {},
-                "cue_targets": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cloud = encode_cues(_bank_cue_input(), config=CueEncoderConfig(checkpoint=checkpoint))
-    primitive_ids = _ids(cloud)
-
-    assert "it" not in primitive_ids
-    assert "in" not in primitive_ids
-    assert "coreference_like" in primitive_ids
-    assert "locative_relation_like" in primitive_ids
+    assert "river_location_like" not in primitive_ids
+    assert cloud.provenance.extra["cue_encoder"]["learned_map_available"] is True
 
 
 def test_cue_encoder_compiles_grid_change_features():
@@ -181,64 +142,12 @@ def test_cue_encoder_audit_writer_records_human_and_machine_files(tmp_path: Path
     assert (run_dir / "output.json").exists()
 
 
-def test_cue_encoder_similar_route_matches_feature_pattern_overlap(tmp_path: Path):
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "cue_encoder_map.json").write_text(
-        json.dumps(
-            {
-                "feature_index": {
-                    "surface:bank": [
-                        {
-                            "cue_key": "river_location_like",
-                            "weight": 0.7,
-                            "preserve_as_alternative": True,
-                            "feature_pattern": ["surface:bank", "kind:noun"],
-                        }
-                    ]
-                },
-                "relation_index": {},
-                "cue_targets": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cloud = encode_cues(_bank_cue_input(), config=CueEncoderConfig(checkpoint=checkpoint))
-    primitive_ids = _ids(cloud)
-
-    assert "river_location_like" in primitive_ids
-
-
-def test_cue_encoder_widen_uses_low_prior_dmf_coverage(tmp_path: Path):
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "cue_encoder_map.json").write_text(
-        json.dumps(
-            {
-                "feature_index": {
-                    "kind:noun": [
-                        {
-                            "cue_key": "value_theme_like",
-                            "weight": 0.65,
-                            "preserve_as_alternative": True,
-                            "feature_pattern": ["kind:noun", "surface:money"],
-                        }
-                    ]
-                },
-                "relation_index": {},
-                "cue_targets": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
+def test_cue_encoder_widen_flag_when_coverage_low():
     cue_input = _bank_cue_input()
     cue_input.upstream_state["dmf_coverage_score"] = 0.2
-    cloud = encode_cues(cue_input, config=CueEncoderConfig(checkpoint=checkpoint))
+    cloud = encode_cues(cue_input)
 
     assert cloud.provenance.extra["cue_encoder"]["widen_applied"] is True
-    assert "value_theme_like" in _ids(cloud)
 
 
 def test_cue_encoder_calibrate_training_patches_missing_routes(tmp_path: Path):

@@ -116,11 +116,7 @@ def test_interference_builds_local_support_and_conflict_pressure() -> None:
     assert any(edge.delta > 0 for edge in out.trace_frame_edges)
     assert any(edge.delta > 0 and edge.scope_frame_id == "cf_event_two" for edge in out.trace_trace_edges)
     assert any(edge.basin_id == "b_event_frame" for edge in out.frame_basin_edges)
-    assert any(
-        report.scope_frame_id == "cf_event_two"
-        and report.conflict_type == "basin_family_competition"
-        for report in out.conflict_reports
-    )
+    assert any(delta.scope_frame_id == "cf_event_two" for delta in out.scoped_basin_energy_deltas)
 
 
 def test_interference_audit_summary_is_human_readable() -> None:

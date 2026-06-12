@@ -4,5 +4,4 @@ emits CueCloud with multiple cue_keys. the dmf looks for traces with similar cue
 works in 4 steps:
 - turn perception into typed clues
 - apply structure rules (clauses and stuff like the words "while")
-- look up learned shortcuts
 - merge and provide tags that keep ambiguity alive for the rest of the system to work on

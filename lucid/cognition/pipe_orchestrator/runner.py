@@ -319,6 +319,7 @@ class OrchestratorRunner:
                 binding_candidate_frames=run.binding_output.candidate_frames,
                 dmf_output=run.dmf_output,
                 perceptual_evidence_graph=run.evidence_graph,
+                cue_cloud=run.cue_cloud,
                 lucidity_feedback=lucidity_feedback,
             )
             run.context_op_output = self._run_stage(

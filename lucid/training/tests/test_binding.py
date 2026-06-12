@@ -9,7 +9,7 @@ from lucid.cognition.pipe_orchestrator.runner import OrchestratorConfig, Orchest
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.ir.binding import BindingInput
 from lucid.ir.common import ComputePolicy, Modality
-from lucid.ir.cue import CueCloud, TraceActivationRequest
+from lucid.ir.cue import CueCloud, RelationalActivationRequest, TraceActivationRequest
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
 from lucid.ir.perception import (
     CandidateUnit,
@@ -226,6 +226,47 @@ def test_orchestrator_binding_frames_after_train(tmp_path: Path) -> None:
     run = runner.run_episode(episode)
     assert run.binding_output is not None
     assert len(run.binding_output.candidate_frames) >= 2
+
+
+def test_binding_marks_competing_cue_routes_unresolved() -> None:
+    graph = PerceptualEvidenceGraph(
+        candidate_units=[
+            CandidateUnit("u_went", "went", "verb"),
+            CandidateUnit("u_bank", "bank", "noun"),
+        ],
+    )
+    out = run_binding(
+        BindingInput(
+            dmf_output=DmfOutput(
+                active_traces=[
+                    ActiveTrace("t0001", 0.4, cluster_id="financial_action_like"),
+                    ActiveTrace("t0002", 0.35, cluster_id="river_location_like"),
+                ],
+                uncertainty_summary="high",
+            ),
+            perceptual_evidence_graph=graph,
+            cue_cloud=CueCloud(
+                primitive_trace_activations=[
+                    TraceActivationRequest("went", 0.62, ["u_went"]),
+                    TraceActivationRequest("bank", 0.62, ["u_bank"]),
+                ],
+                relational_trace_activations=[
+                    RelationalActivationRequest(
+                        "river_location_like",
+                        0.251,
+                        endpoint_unit_ids=["u_bank"],
+                    )
+                ],
+            ),
+        )
+    )
+    frame = out.candidate_frames[0]
+    assert "bank_sense" in frame.unresolved_slot_names
+    assert "u_bank" not in {
+        refs[0]
+        for slot_id, refs in frame.slot_evidence_refs.items()
+        if slot_id in frame.role_assignments
+    }
 
 
 def test_cli_bind_smoke(capsys) -> None:

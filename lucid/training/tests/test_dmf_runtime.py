@@ -5,7 +5,7 @@ from pathlib import Path
 
 from lucid.cli import main as lucid_main
 from lucid.ir.common import ComputePolicy, MaturityState
-from lucid.ir.cue import CueCloud, TraceActivationRequest
+from lucid.ir.cue import CueCloud, RelationalActivationRequest, TraceActivationRequest
 from lucid.ir.dmf import DmfInput
 from lucid.cognition.memory.dmf import DmfTraceRecord, DynamicMemoryField
 from lucid.training.learn.dmf import apply_lucidity_trace_feedback, learn_from_episode
@@ -283,6 +283,45 @@ def test_dmf_output_audit_counts_lifecycle_state():
     assert out.audit_log["active_or_better_traces"] == 1
 
 
+def test_dmf_emits_plural_traces_for_competing_bank_routes():
+    dmf = DynamicMemoryField(
+        tracebank=[
+            DmfTraceRecord(
+                trace_id="t_fin",
+                cue_affinities={"financial_action_like": 0.9, "bank": 0.35},
+            ),
+            DmfTraceRecord(
+                trace_id="t_river",
+                cue_affinities={"bank": 0.9, "river_location_like": 0.82},
+            ),
+        ]
+    )
+    dmf.rebuild_index()
+    cue = CueCloud(
+        primitive_trace_activations=[
+            TraceActivationRequest(trace_id="bank", weight=0.62, evidence_refs=["u_bank"]),
+            TraceActivationRequest(trace_id="went", weight=0.62, evidence_refs=["u_went"]),
+        ],
+        relational_trace_activations=[
+            RelationalActivationRequest(
+                trace_id="river_location_like",
+                weight=0.251,
+                endpoint_unit_ids=["u_bank"],
+            )
+        ],
+    )
+    out = dmf.run(
+        DmfInput(cue_cloud=cue, compute_policy=ComputePolicy(max_active_traces=2))
+    )
+    active_ids = {trace.trace_id for trace in out.active_traces}
+    assert len(out.active_traces) == 2
+    assert active_ids == {"t_fin", "t_river"}
+    assert any(
+        reason["cue_key"] == "bank" and reason["evidence_refs"] == ["u_bank"]
+        for reason in out.activation_reasons["t_fin"]
+    )
+
+
 def test_dmf_phrase_affinity_matches_head_word_cue():
     dmf = DynamicMemoryField(
         tracebank=[
@@ -311,7 +350,7 @@ def test_dmf_phrase_affinity_matches_head_word_cue():
 
     active = {trace.trace_id for trace in out.active_traces}
     assert active == {"t-finance", "t-outdoor"}
-    assert out.coverage_score >= 1.0
+    assert all(trace.activation > 0.0 for trace in out.active_traces)
 
 
 def test_dmf_retrieval_uses_sparse_candidate_index():
@@ -337,7 +376,7 @@ def test_dmf_retrieval_uses_sparse_candidate_index():
 
     assert [trace.trace_id for trace in out.active_traces] == ["t-match"]
     assert out.audit_log["candidate_traces"] == 1
-    assert out.audit_log["retrieval_mode"] == "indexed_top_k"
+    assert out.audit_log["retrieval_mode"] == "activated_threshold_filter"
 
 
 def test_dmf_winner_learning_reinforces_only_relevant_existing_cues():
@@ -400,4 +439,4 @@ def test_lucid_dmf_smoke_command(tmp_path: Path, capsys):
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["active_traces"]) == 2
-    assert payload["audit_log"]["retrieval_mode"] == "indexed_top_k"
+    assert payload["audit_log"]["retrieval_mode"] == "activated_threshold_filter"

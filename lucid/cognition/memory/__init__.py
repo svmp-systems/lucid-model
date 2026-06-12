@@ -1,6 +1,6 @@
-"""Runtime memory components."""
+"""Runtime memory components (re-export from :mod:`lucid.memory`)."""
 
-from lucid.cognition.memory.dmf import (
+from lucid.memory.dmf import (
     DmfAuditEvent,
     DmfTraceRecord,
     DynamicMemoryField,

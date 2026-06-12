@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues, measure_cue_recall, normalize_cue_key
-from lucid.cognition.input.cue.encoder import expand_cue_aliases
 from lucid.ir.training import Episode
 from lucid.training.corpus import adapters
 from lucid.training.checkpoint.store import CheckpointState
@@ -55,8 +54,7 @@ def _feature_keys_for_target(episode: Episode, target: dict[str, Any]) -> list[s
         surface = normalize_cue_key(span.surface)
         kind = normalize_cue_key(span.kind_hint)
         if surface:
-            for alias in sorted(expand_cue_aliases(span.surface)):
-                keys.append(f"surface:{alias}")
+            keys.append(f"surface:{surface}")
             for flag in episode.gold.uncertainty_flags:
                 if flag.target_id == span.span_id:
                     keys.append(
