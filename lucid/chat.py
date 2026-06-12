@@ -10,11 +10,17 @@ from lucid.audit.logger import content_hash
 from lucid.audit.chat import (
     ChatAuditTurn,
     append_chat_turn,
+    build_session_context,
     load_chat_record,
+    load_session_memory,
+    memory_reply_for_text,
+    new_session_memory,
     refresh_history_views,
     save_chat_record,
+    save_session_memory,
     session_file,
     to_session_state,
+    update_session_memory_from_turn,
 )
 from lucid.cognition.input.perception import PerceptionConfig
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
@@ -48,6 +54,8 @@ def start_session(
         from lucid.audit.chat import new_chat_record
 
         save_chat_record(audit_dir, new_chat_record(sid))
+    if load_session_memory(audit_dir, sid) is None:
+        save_session_memory(audit_dir, new_session_memory(sid))
     return sid
 
 
@@ -78,36 +86,32 @@ def run_chat_turn(
         start_session(session_id=session_id, audit_dir=audit_dir)
         record = load_chat_record(audit_dir, session_id)
     assert record is not None
+    memory = load_session_memory(audit_dir, session_id)
+    if memory is None:
+        memory = new_session_memory(session_id)
+        save_session_memory(audit_dir, memory)
 
     turn_index = len(record.turns) + 1
     refresh_history_views(record)
+    session_context = build_session_context(
+        record,
+        memory,
+        current_turn_index=turn_index,
+    )
     episode = Episode(
         episode_id=f"{session_id}-turn-{turn_index:04d}",
         modality=Modality.TEXT,
         raw_input=text,
-        task_intent=TaskIntent.ANSWER,
+        task_intent=TaskIntent.CHAT,
         context={
             "session_id": session_id,
             "turn_index": turn_index,
-            "previous_turns": [
-                {
-                    "turn_index": turn.turn_index,
-                    "user_input": turn.user_input,
-                    "assistant_output": turn.assistant_output,
-                }
-                for turn in record.turns
-            ],
-            "full_history": [
-                {
-                    "turn_index": turn.turn_index,
-                    "user_input": turn.user_input,
-                    "assistant_output": turn.assistant_output,
-                    "lucidity_decision": turn.lucidity_decision,
-                }
-                for turn in record.turns
-            ],
+            "session_context": session_context,
+            "previous_turns": session_context["recent_turns"],
             "working_memory": [to_dict(item) for item in record.working_memory],
-            "unclear_items": [to_dict(item) for item in record.unclear_items],
+            "active_memories": session_context["active_memories"],
+            "active_bindings": session_context["active_bindings"],
+            "unclear_items": session_context["unresolved_items"],
         },
         meta={"source": "lucid.chat"},
     )
@@ -126,13 +130,18 @@ def run_chat_turn(
         episode,
         session_id=session_id,
         turn_index=turn_index,
-        session_state=to_session_state(record),
+        session_state=to_session_state(record, memory),
     )
     assistant_output = ""
     if run.decoder_output is not None:
         assistant_output = run.decoder_output.surface_text
     if not assistant_output:
         assistant_output = "(no decoder output)"
+    response_source = "pipeline"
+    memory_reply = memory_reply_for_text(text, memory)
+    if memory_reply and _pipeline_output_needs_memory_fallback(assistant_output):
+        assistant_output = memory_reply
+        response_source = "session_memory"
 
     lucidity_decision = ""
     if run.lucidity_output is not None:
@@ -151,18 +160,28 @@ def run_chat_turn(
             learning_rate=learning_rate,
         )
 
+    turn = ChatAuditTurn(
+        turn_index=turn_index,
+        run_id=run.context.run_id,
+        user_input=text,
+        assistant_output=assistant_output,
+        run_audit_dir=run.context.audit_dir,
+        lucidity_decision=lucidity_decision,
+        dmf_learning=dmf_learning or {},
+        response_source=response_source,
+    )
+    memory_events = update_session_memory_from_turn(
+        memory,
+        turn,
+        lucidity_decision=lucidity_decision,
+    )
+    turn.memory_events = [to_dict(event) for event in memory_events]
+    save_session_memory(audit_dir, memory)
+
     updated = append_chat_turn(
         audit_dir,
         session_id=session_id,
-        turn=ChatAuditTurn(
-            turn_index=turn_index,
-            run_id=run.context.run_id,
-            user_input=text,
-            assistant_output=assistant_output,
-            run_audit_dir=run.context.audit_dir,
-            lucidity_decision=lucidity_decision,
-            dmf_learning=dmf_learning or {},
-        ),
+        turn=turn,
     )
     return ChatTurnResult(
         session_id=session_id,
@@ -258,3 +277,11 @@ def _next_store_id(records: list[object]) -> int:
         if len(raw) > 1 and raw[0] == "t" and raw[1:].isdigit():
             max_seen = max(max_seen, int(raw[1:]))
     return max_seen + 1
+
+
+def _pipeline_output_needs_memory_fallback(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or stripped == "(no decoder output)":
+        return True
+    lowered = stripped.lower()
+    return "no approved text content was available" in lowered or lowered.startswith("(holding:")

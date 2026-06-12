@@ -236,6 +236,11 @@ class OrchestratorRunner:
         if self.config.checkpoint:
             ctx.extra["checkpoint"] = self.config.checkpoint
         ctx.extra["audit_base_dir"] = str(resolve_train_path(self.config.audit_base_dir))
+        if episode.context:
+            ctx.extra["episode_context"] = episode.context
+            session_context = episode.context.get("session_context")
+            if isinstance(session_context, dict):
+                ctx.extra["session_context"] = session_context
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()
@@ -266,7 +271,13 @@ class OrchestratorRunner:
             if isinstance(episode.modality, Modality)
             else Modality(str(episode.modality))
         )
-        run.perception_input = PerceptionInput(raw_payload=episode.raw_input, modality=modality)
+        run.perception_input = PerceptionInput(
+            raw_payload=episode.raw_input,
+            modality=modality,
+            task_intent_hint=run.context.task_intent,
+            prior_context=episode.context,
+            provenance_seed=run.context.session_id,
+        )
         run.evidence_graph = self._run_stage(StageName.PERCEPTION.value, run, run.perception_input)
 
         # 2-9) Iterative pipeline core.

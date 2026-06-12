@@ -15,6 +15,7 @@ from lucid.cognition.decoder import run_decoder
 from lucid.cognition.lucidity import run_lucidity
 from lucid.audit.cue import write_cue_encoder_audit
 from lucid.chat import list_sessions, run_chat_turn, start_session
+from lucid.audit.chat import load_session_memory, new_session_memory, save_session_memory
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
@@ -881,6 +882,20 @@ def _cmd_chat_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_chat_memory(args: argparse.Namespace) -> int:
+    try:
+        memory = load_session_memory(args.audit_dir, args.session_id)
+        if memory is None:
+            memory = new_session_memory(args.session_id)
+            if args.create:
+                save_session_memory(args.audit_dir, memory)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(to_json(memory))
+    return 0
+
+
 def _cmd_train(args: argparse.Namespace) -> int:
     from lucid.training.cli import main as train_main
 
@@ -1136,6 +1151,12 @@ def _build_parser() -> argparse.ArgumentParser:
     chat_list = chat_sub.add_parser("list", help="List chat sessions under the audit directory")
     chat_list.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
     chat_list.set_defaults(func=_cmd_chat_list)
+
+    chat_memory = chat_sub.add_parser("memory", help="Print one session's chat memory audit")
+    chat_memory.add_argument("--session-id", required=True, help="Session id from lucid chat start")
+    chat_memory.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
+    chat_memory.add_argument("--create", action="store_true", help="Create an empty memory file if missing")
+    chat_memory.set_defaults(func=_cmd_chat_memory)
     return parser
 
 
