@@ -27,6 +27,7 @@ from lucid.ir.perception import PerceptionInput
 from lucid.ir.pipeline import (
     PipelineRun,
     RunContext,
+    SessionState,
     StageExecutionRecord,
     StageName,
     StageResult,
@@ -208,6 +209,7 @@ class OrchestratorRunner:
         *,
         session_id: str = "",
         turn_index: int = 0,
+        session_state: SessionState | None = None,
     ) -> PipelineRun:
         ctx = RunContext(
             run_id=_pipeline_run_id(episode),
@@ -220,6 +222,7 @@ class OrchestratorRunner:
                 else TaskIntent(str(episode.task_intent))
             ),
             episode=None,
+            session_state=session_state,
         )
         # Keep a reference for runtime stages that need training metadata.
         ctx.episode = episode  # type: ignore[assignment]
@@ -235,6 +238,11 @@ class OrchestratorRunner:
         ctx.extra["template_id"] = str(episode.template_id or "")
         ctx.extra["episode_id"] = str(episode.episode_id or "")
         ctx.extra["audit_base_dir"] = str(resolve_train_path(self.config.audit_base_dir))
+        if episode.context:
+            ctx.extra["episode_context"] = episode.context
+            session_context = episode.context.get("session_context")
+            if isinstance(session_context, dict):
+                ctx.extra["session_context"] = session_context
 
         run = PipelineRun(context=ctx)
         t0 = _now_ms()
@@ -265,7 +273,13 @@ class OrchestratorRunner:
             if isinstance(episode.modality, Modality)
             else Modality(str(episode.modality))
         )
-        run.perception_input = PerceptionInput(raw_payload=episode.raw_input, modality=modality)
+        run.perception_input = PerceptionInput(
+            raw_payload=episode.raw_input,
+            modality=modality,
+            task_intent_hint=run.context.task_intent,
+            prior_context=episode.context,
+            provenance_seed=run.context.session_id,
+        )
         run.evidence_graph = self._run_stage(StageName.PERCEPTION.value, run, run.perception_input)
 
         # 2-9) Iterative pipeline core.
