@@ -1,4 +1,4 @@
-"""Backward-compatible re-export — canonical implementation in :mod:`lucid.memory.dmf`."""
+"""Runtime memory components."""
 
 from lucid.memory.dmf import (
     DmfAuditEvent,

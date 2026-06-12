@@ -30,7 +30,7 @@ from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.cognition.reasoning.interference import run_interference
 from lucid.ir.pipeline import RunContext
-from lucid.cognition.memory.dmf import DynamicMemoryField, load_dynamic_memory_field
+from lucid.memory.dmf import DynamicMemoryField, load_dynamic_memory_field
 
 
 def perception(inp: PerceptionInput, ctx: object) -> PerceptualEvidenceGraph:
@@ -132,18 +132,15 @@ def binding(inp: BindingInput, ctx: object) -> BindingOutput:
 
 
 def context_op(inp: ContextOpInput, ctx: object) -> ContextOpOutput:
-    out = run_context_op(inp)
     extra = _extra_from_context(ctx)
-    checkpoint = str(extra.get("checkpoint") or extra.get("context_checkpoint") or "").strip()
-    if not checkpoint:
-        return out
-    from lucid.cognition.pipe_orchestrator.checkpoint_runtime import context_gate_hints, merge_gate_lists
+    from lucid.cognition.reasoning.context_op import ContextOpConfig
 
-    template_id = str(extra.get("template_id") or "")
-    hints = context_gate_hints(checkpoint, template_id=template_id)
-    if not hints:
-        return out
-    return replace(out, interference_gates=merge_gate_lists(out.interference_gates, hints))
+    return run_context_op(
+        inp,
+        config=ContextOpConfig(
+            checkpoint=extra.get("checkpoint") or extra.get("context_checkpoint"),
+        ),
+    )
 
 
 def interference(inp: InterferenceInput, ctx: object) -> InterferenceOutput:

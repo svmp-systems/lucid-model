@@ -109,7 +109,7 @@ def test_context_op_keeps_basin_pressure_soft_and_scoped() -> None:
         for pressure in out.local_basin_pressures
         if pressure.context_frame_id == "cf_event_two"
     )
-    assert "financial_destination_like" in pressure_two.basin_family_hints
+    assert "bank" in pressure_two.basin_family_hints
     assert out.ambiguity_policy == AmbiguityPolicy.PRESERVE_PLURAL
     assert any("context_frames=2" in note for note in out.audit_notes)
 
@@ -144,7 +144,7 @@ def test_context_op_region_fallback_when_binding_is_empty() -> None:
 
     assert out.context_frames[0].context_frame_id == "cf_legend_region"
     assert out.scoped_trace_assignments[0].primary_context_frame_id == "cf_legend_region"
-    assert out.local_basin_pressures[0].basin_family_hints["symbol_region_like"] > 0
+    assert out.local_basin_pressures[0].basin_family_hints["glyph"] > 0
 
 
 def test_context_op_audit_summary_is_human_readable() -> None:

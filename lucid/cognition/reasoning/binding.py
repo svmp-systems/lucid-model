@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from lucid.cognition.input.cue.encoder import normalize_cue_key
+from lucid.cognition.reasoning.cue_routes import (
+    competing_units as plural_cue_units,
+    cue_keys_per_unit,
+)
 from lucid.ir.binding import (
     BindingInput,
     BindingOutput,
@@ -22,7 +26,7 @@ from lucid.ir.perception import (
     ChangeHint,
     PerceptualEvidenceGraph,
 )
-from lucid.cognition.memory.dmf import tracebank_from_checkpoint
+from lucid.memory.dmf import tracebank_from_checkpoint
 
 _TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -53,6 +57,7 @@ class FrameSeed:
     unit_ids: set[str] = field(default_factory=set)
     structural_tags: list[str] = field(default_factory=list)
     source: str = ""
+    forced_trace_assignments: dict[str, str] = field(default_factory=dict)
 
 
 def run_binding(inp: BindingInput, *, config: BindingConfig | None = None) -> BindingOutput:
@@ -65,9 +70,7 @@ class BindingOperator:
         self.config = config
         self._affordances = config.affordances
         if self._affordances is None and config.checkpoint:
-            from lucid.runtime.paths import resolve_checkpoint
-
-            path = resolve_checkpoint(config.checkpoint)
+            path = Path(config.checkpoint)
             if path.exists():
                 self._affordances = _load_affordances(path)
 
@@ -81,11 +84,18 @@ class BindingOperator:
             dmf.active_traces,
         )
         unit_by_id = {unit.unit_id: unit for unit in graph.candidate_units}
-        unit_order = {unit.unit_id: index for index, unit in enumerate(graph.candidate_units)}
-        unit_traces = _unit_trace_weights(cue, cue_to_trace, dmf.active_traces, unit_by_id)
-        polysemous_units = _polysemous_unit_ids(graph)
+        unit_traces = _unit_trace_weights(cue, cue_to_trace, dmf.active_traces, unit_by_id, dmf)
+        competing_units = _competing_unit_ids(cue, unit_traces, dmf.active_traces)
 
         seeds = _collect_seeds(graph, inp.prior_candidate_frames, affordances)
+        local_seeds = _local_reading_seeds(
+            graph=graph,
+            unit_by_id=unit_by_id,
+            unit_traces=unit_traces,
+            active_traces=dmf.active_traces,
+            competing_units=competing_units,
+        )
+        seeds.extend(local_seeds)
         if inp.prior_candidate_frames and self.config.widen_on_recheck:
             seeds.extend(_seeds_from_prior_frames(inp.prior_candidate_frames))
 
@@ -98,9 +108,8 @@ class BindingOperator:
                 graph=graph,
                 dmf=dmf,
                 unit_by_id=unit_by_id,
-                unit_order=unit_order,
                 unit_traces=unit_traces,
-                polysemous_units=polysemous_units,
+                competing_units=competing_units,
                 affordances=affordances,
                 cue_to_trace=cue_to_trace,
             )
@@ -114,9 +123,8 @@ class BindingOperator:
                     graph=graph,
                     dmf=dmf,
                     unit_by_id=unit_by_id,
-                    unit_order=unit_order,
                     unit_traces=unit_traces,
-                    polysemous_units=polysemous_units,
+                    competing_units=competing_units,
                     cue_to_trace=cue_to_trace,
                 )
             )
@@ -128,6 +136,7 @@ class BindingOperator:
         audit_notes.extend(
             [
                 f"seeds={len(seeds)}",
+                f"local_reading_seeds={len(local_seeds)}",
                 f"candidate_frames={len(frames)}",
                 f"active_traces={len(dmf.active_traces)}",
                 f"stability={stability:.3f}",
@@ -148,11 +157,10 @@ class BindingOperator:
         graph: PerceptualEvidenceGraph,
         dmf: DmfOutput,
         unit_by_id: dict[str, CandidateUnit],
-        unit_order: dict[str, int],
         unit_traces: dict[str, dict[str, float]],
-        polysemous_units: set[str],
+        competing_units: set[str],
         affordances: dict[str, Any],
-        cue_to_trace: dict[str, str],
+        cue_to_trace: dict[str, list[str]],
     ) -> CandidateFrame:
         slot_assignments: dict[str, str] = {}
         slot_evidence_refs: dict[str, list[str]] = {}
@@ -178,7 +186,7 @@ class BindingOperator:
                     trace_scores[trace.trace_id] = trace.activation
 
         ranked_traces = sorted(trace_scores.items(), key=lambda item: (-item[1], item[0]))
-        for slot_index, unit_id in enumerate(_ordered_unit_ids(member_refs, unit_by_id, unit_order)):
+        for slot_index, unit_id in enumerate(_ordered_unit_ids(member_refs, unit_by_id)):
             unit = unit_by_id[unit_id]
             slot_id = f"slot_{slot_index:02d}"
             slot_evidence_refs[slot_id] = [unit_id]
@@ -190,6 +198,15 @@ class BindingOperator:
             )
             if hints:
                 slot_affinity_hints[slot_id] = hints
+            forced_trace = seed.forced_trace_assignments.get(unit_id, "").strip()
+            if forced_trace:
+                slot_assignments[slot_id] = forced_trace
+                supporting.append(forced_trace)
+                continue
+            if unit_id in competing_units:
+                unresolved.append(f"{normalize_cue_key(unit.surface)}_sense")
+                continue
+
             best_trace = _best_trace_for_unit(unit_id, ranked_traces, unit_traces)
             if not best_trace:
                 continue
@@ -197,10 +214,17 @@ class BindingOperator:
             slot_assignments[slot_id] = trace_id
             supporting.append(trace_id)
 
-            if unit_id in polysemous_units and _has_slot_hint(hints, "location_like"):
-                unresolved.append(f"{normalize_cue_key(unit.surface)}_sense")
-
-        conflicting = _conflicting_traces_for_frame(supporting, dmf)
+        conflicting = sorted(
+            set(_conflicting_traces_for_frame(supporting, dmf))
+            | set(
+                _conflicting_traces_from_unit_routes(
+                    member_refs,
+                    unit_traces,
+                    competing_units,
+                    dmf,
+                )
+            )
+        )
 
         confidence = _frame_confidence(
             seed,
@@ -218,9 +242,7 @@ class BindingOperator:
             role_assignments=slot_assignments,
             slot_evidence_refs=slot_evidence_refs,
             slot_affinity_hints=slot_affinity_hints,
-            member_evidence_refs=list(
-                dict.fromkeys(_ordered_unit_ids(member_refs, unit_by_id, unit_order))
-            ),
+            member_evidence_refs=sorted(set(member_refs)),
             confidence=round(confidence, 3),
             unresolved_slot_names=sorted(set(unresolved)),
             supporting_trace_ids=sorted(set(supporting)),
@@ -233,10 +255,9 @@ class BindingOperator:
         graph: PerceptualEvidenceGraph,
         dmf: DmfOutput,
         unit_by_id: dict[str, CandidateUnit],
-        unit_order: dict[str, int],
         unit_traces: dict[str, dict[str, float]],
-        polysemous_units: set[str],
-        cue_to_trace: dict[str, str],
+        competing_units: set[str],
+        cue_to_trace: dict[str, list[str]],
     ) -> CandidateFrame:
         seed = FrameSeed(
             seed_id="frame_active",
@@ -250,9 +271,8 @@ class BindingOperator:
             graph=graph,
             dmf=dmf,
             unit_by_id=unit_by_id,
-            unit_order=unit_order,
             unit_traces=unit_traces,
-            polysemous_units=polysemous_units,
+            competing_units=competing_units,
             affordances=_empty_affordances(),
             cue_to_trace=cue_to_trace,
         )
@@ -260,15 +280,15 @@ class BindingOperator:
 
 def _resolve_trace_id(
     key: str,
-    cue_to_trace: dict[str, str],
+    cue_to_trace: dict[str, list[str]],
     active_traces: list[ActiveTrace],
 ) -> str:
     raw = key.strip()
     if not raw:
         return ""
     normalized = normalize_cue_key(raw)
-    if normalized in cue_to_trace:
-        return cue_to_trace[normalized]
+    if normalized in cue_to_trace and cue_to_trace[normalized]:
+        return cue_to_trace[normalized][0]
     for trace in active_traces:
         if trace.trace_id == raw:
             return trace.trace_id
@@ -394,11 +414,7 @@ def _seeds_from_units_and_references(
         if _is_verb_like(unit)
     ]
     if len(verb_units) >= 2:
-        unit_order = {unit.unit_id: index for index, unit in enumerate(units)}
-        ordered = sorted(
-            units,
-            key=lambda unit: _position_key(unit, unit_order.get(unit.unit_id, 999)),
-        )
+        ordered = sorted(units, key=_position_key)
         pivot = ordered.index(verb_units[1])
         first_units = {unit.unit_id for unit in ordered[:pivot]}
         second_units = {unit.unit_id for unit in ordered[pivot:]}
@@ -470,33 +486,139 @@ def _seeds_from_prior_frames(frames: list[CandidateFrame]) -> list[FrameSeed]:
     return seeds
 
 
+def _ambiguous_unit_ids(graph: PerceptualEvidenceGraph) -> set[str]:
+    return {
+        flag.target_id
+        for flag in graph.uncertainty_flags
+        if flag.target_id and flag.uncertainty_type in {"polysemy", "ambiguous"}
+    }
+
+
+def _local_unit_window(
+    focus_unit_id: str,
+    unit_by_id: dict[str, CandidateUnit],
+    *,
+    radius: int = 2,
+) -> set[str]:
+    ordered = sorted(unit_by_id.values(), key=_position_key)
+    focus_index = next(
+        (index for index, unit in enumerate(ordered) if unit.unit_id == focus_unit_id),
+        -1,
+    )
+    if focus_index < 0:
+        return {focus_unit_id}
+    start = max(0, focus_index - radius)
+    stop = min(len(ordered), focus_index + radius + 1)
+    return {unit.unit_id for unit in ordered[start:stop]}
+
+
+def _best_trace_per_cluster(
+    trace_weights: dict[str, float],
+    active_traces: list[ActiveTrace],
+    *,
+    min_weight: float = 0.12,
+    limit: int = 4,
+) -> list[str]:
+    active_by_id = {trace.trace_id: trace for trace in active_traces if trace.trace_id}
+    by_cluster: dict[str, tuple[str, float]] = {}
+    for trace_id, weight in trace_weights.items():
+        if trace_id not in active_by_id or weight < min_weight:
+            continue
+        trace = active_by_id[trace_id]
+        cluster = trace.cluster_id or trace.trace_id
+        previous = by_cluster.get(cluster)
+        if previous is None or weight > previous[1]:
+            by_cluster[cluster] = (trace_id, weight)
+    ranked = sorted(by_cluster.values(), key=lambda item: (-item[1], item[0]))
+    return [trace_id for trace_id, _weight in ranked[:limit]]
+
+
+def _local_reading_seeds(
+    *,
+    graph: PerceptualEvidenceGraph,
+    unit_by_id: dict[str, CandidateUnit],
+    unit_traces: dict[str, dict[str, float]],
+    active_traces: list[ActiveTrace],
+    competing_units: set[str],
+) -> list[FrameSeed]:
+    ambiguous = _ambiguous_unit_ids(graph)
+    focus_units = sorted(
+        (competing_units & ambiguous) or competing_units,
+        key=lambda unit_id: _position_key(unit_by_id[unit_id])
+        if unit_id in unit_by_id
+        else (0, unit_id, ""),
+    )
+    seeds: list[FrameSeed] = []
+    seen: set[str] = set()
+    for unit_id in focus_units:
+        unit = unit_by_id.get(unit_id)
+        if unit is None:
+            continue
+        trace_ids = _best_trace_per_cluster(unit_traces.get(unit_id, {}), active_traces)
+        if len(trace_ids) < 2:
+            continue
+        local_units = _local_unit_window(unit_id, unit_by_id)
+        surface = normalize_cue_key(unit.surface) or unit_id
+        for trace_id in trace_ids:
+            trace_slug = normalize_cue_key(trace_id) or _slug_frame_id(trace_id)
+            seed_id = f"local_{unit_id}__{trace_slug}"
+            if seed_id in seen:
+                continue
+            seeds.append(
+                FrameSeed(
+                    seed_id=seed_id,
+                    frame_type="local_reading",
+                    unit_ids=set(local_units),
+                    structural_tags=[
+                        f"local_focus:{unit_id}",
+                        f"surface:{surface}",
+                        f"forced_trace:{trace_id}",
+                    ],
+                    source="local_competing_trace",
+                    forced_trace_assignments={unit_id: trace_id},
+                )
+            )
+            seen.add(seed_id)
+    return seeds
+
+
 def _build_cue_to_trace_map(
     checkpoint: str | Path | None,
     active_traces: list[ActiveTrace],
-) -> dict[str, str]:
-    mapping: dict[str, str] = {}
+) -> dict[str, list[str]]:
+    mapping: dict[str, list[str]] = {}
+
+    def add(key: str, trace_id: str) -> None:
+        norm = normalize_cue_key(key)
+        clean_trace = trace_id.strip()
+        if not norm or not clean_trace:
+            return
+        bucket = mapping.setdefault(norm, [])
+        if clean_trace not in bucket:
+            bucket.append(clean_trace)
+
     if checkpoint:
         for record in tracebank_from_checkpoint(checkpoint):
             trace_id = record.trace_id.strip()
             if not trace_id:
                 continue
-            mapping[normalize_cue_key(trace_id)] = trace_id
+            add(trace_id, trace_id)
             for key in record.cue_affinities:
-                if key:
-                    mapping[normalize_cue_key(key)] = trace_id
+                add(key, trace_id)
             if record.alias:
-                mapping[normalize_cue_key(record.alias)] = trace_id
+                add(record.alias, trace_id)
     for trace in active_traces:
         if trace.trace_id:
-            mapping[normalize_cue_key(trace.trace_id)] = trace.trace_id
+            add(trace.trace_id, trace.trace_id)
     return mapping
 
 
 def _unit_trace_weights(
     cue: CueCloud,
-    cue_to_trace: dict[str, str],
+    cue_to_trace: dict[str, list[str]],
     active_traces: list[ActiveTrace],
     unit_by_id: dict[str, CandidateUnit],
+    dmf: DmfOutput | None = None,
 ) -> dict[str, dict[str, float]]:
     weights: dict[str, dict[str, float]] = {}
     activation_by_id = {trace.trace_id: trace.activation for trace in active_traces if trace.trace_id}
@@ -507,24 +629,45 @@ def _unit_trace_weights(
         bucket = weights.setdefault(unit_id, {})
         bucket[trace_id] = max(bucket.get(trace_id, 0.0), float(weight))
 
+    if dmf is not None:
+        for trace in active_traces:
+            trace_id = trace.trace_id
+            if not trace_id:
+                continue
+            for reason in dmf.activation_reasons.get(trace_id, []):
+                contribution = _safe_float(reason.get("contribution"), 0.0)
+                score = max(contribution, trace.activation * 0.5)
+                refs = [
+                    str(ref)
+                    for ref in (
+                        list(reason.get("evidence_refs") or [])
+                        + list(reason.get("endpoint_unit_ids") or [])
+                    )
+                    if str(ref)
+                ]
+                for ref in refs:
+                    add(ref, trace_id, score)
+
     for req in cue.primitive_trace_activations:
         cue_key = normalize_cue_key(req.trace_id)
-        trace_id = cue_to_trace.get(cue_key, req.trace_id)
-        score = float(req.weight) * activation_by_id.get(trace_id, 0.55)
-        for ref in req.evidence_refs:
-            add(ref, trace_id, score)
-        for unit_id, unit in unit_by_id.items():
-            if cue_key and cue_key in normalize_cue_key(unit.surface):
-                add(unit_id, trace_id, score)
+        trace_ids = cue_to_trace.get(cue_key) or [req.trace_id]
+        for trace_id in trace_ids:
+            score = float(req.weight) * activation_by_id.get(trace_id, 0.55)
+            for ref in req.evidence_refs:
+                add(ref, trace_id, score)
+            for unit_id, unit in unit_by_id.items():
+                if cue_key and cue_key in normalize_cue_key(unit.surface):
+                    add(unit_id, trace_id, score)
 
     for req in cue.relational_trace_activations:
         cue_key = normalize_cue_key(req.trace_id)
-        trace_id = cue_to_trace.get(cue_key, req.trace_id)
-        score = float(req.weight) * activation_by_id.get(trace_id, 0.55)
-        for ref in req.relation_refs:
-            add(ref, trace_id, score)
-        for ref in req.endpoint_unit_ids:
-            add(ref, trace_id, score)
+        trace_ids = cue_to_trace.get(cue_key) or [req.trace_id]
+        for trace_id in trace_ids:
+            score = float(req.weight) * activation_by_id.get(trace_id, 0.55)
+            for ref in req.relation_refs:
+                add(ref, trace_id, score)
+            for ref in req.endpoint_unit_ids:
+                add(ref, trace_id, score)
 
     for trace in active_traces:
         if not trace.trace_id:
@@ -538,12 +681,53 @@ def _unit_trace_weights(
     return weights
 
 
-def _polysemous_unit_ids(graph: PerceptualEvidenceGraph) -> set[str]:
-    return {
-        flag.target_id
-        for flag in graph.uncertainty_flags
-        if flag.uncertainty_type == "polysemy" and flag.target_id
-    }
+def _competing_unit_ids(
+    cue: CueCloud,
+    unit_traces: dict[str, dict[str, float]],
+    active_traces: list[ActiveTrace],
+    *,
+    min_weight: float = 0.12,
+) -> set[str]:
+    routes = cue_keys_per_unit(cue)
+    competing: set[str] = set(plural_cue_units(cue).keys())
+    cluster_by_trace = {trace.trace_id: trace.cluster_id for trace in active_traces if trace.trace_id}
+    active_ids = set(cluster_by_trace)
+
+    for unit_id in set(routes) | set(unit_traces):
+        strong = {
+            trace_id
+            for trace_id, weight in unit_traces.get(unit_id, {}).items()
+            if trace_id in active_ids and weight >= min_weight
+        }
+        if len(strong) < 2:
+            continue
+        clusters = {cluster_by_trace.get(trace_id, trace_id) for trace_id in strong}
+        if len(clusters) >= 2:
+            competing.add(unit_id)
+    return competing
+
+
+def _conflicting_traces_from_unit_routes(
+    member_refs: list[str],
+    unit_traces: dict[str, dict[str, float]],
+    competing_units: set[str],
+    dmf: DmfOutput,
+    *,
+    min_weight: float = 0.12,
+) -> list[str]:
+    conflicts: set[str] = set()
+    active_ids = {trace.trace_id for trace in dmf.active_traces if trace.trace_id}
+    for unit_id in member_refs:
+        if unit_id not in competing_units:
+            continue
+        strong = [
+            trace_id
+            for trace_id, weight in unit_traces.get(unit_id, {}).items()
+            if trace_id in active_ids and weight >= min_weight
+        ]
+        conflicts.update(strong)
+    conflicts.update(_conflicting_traces_for_frame(sorted(conflicts), dmf))
+    return sorted(conflicts)
 
 
 def _slot_affinity_hints_for_unit(
@@ -619,28 +803,24 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
-def _position_key(unit: CandidateUnit, order_index: int) -> tuple[int, int, str]:
+def _position_key(unit: CandidateUnit) -> tuple[int, str, str]:
     raw = str(unit.position_or_time or "").strip()
     try:
         position = int(raw)
     except ValueError:
         position = 0
-    return position, order_index, unit.surface.lower()
+    return position, unit.unit_id, unit.surface
 
 
 def _ordered_unit_ids(
     unit_ids: list[str],
     unit_by_id: dict[str, CandidateUnit],
-    unit_order: dict[str, int],
 ) -> list[str]:
     return sorted(
         unit_ids,
-        key=lambda unit_id: _position_key(
-            unit_by_id[unit_id],
-            unit_order.get(unit_id, 999),
-        )
+        key=lambda unit_id: _position_key(unit_by_id[unit_id])
         if unit_id in unit_by_id
-        else (0, 999, unit_id),
+        else (0, unit_id, ""),
     )
 
 
@@ -715,6 +895,34 @@ def _competition_edges(
         left_traces = set(left.role_assignments.values()) | set(left.supporting_trace_ids)
         for right in frames[index + 1 :]:
             right_traces = set(right.role_assignments.values()) | set(right.supporting_trace_ids)
+            left_focus = _local_focus_unit(left)
+            right_focus = _local_focus_unit(right)
+            if left_focus and left_focus == right_focus and left.frame_id != right.frame_id:
+                edges.append(
+                    FrameCompetitionEdge(
+                        frame_id_a=left.frame_id,
+                        frame_id_b=right.frame_id,
+                        relation="compete",
+                        weight=0.65,
+                    )
+                )
+                continue
+            if (
+                left.frame_type == "local_reading"
+                and right.frame_type == "local_reading"
+                and set(left.member_evidence_refs) == set(right.member_evidence_refs)
+                and left_traces
+                and right_traces
+                and left_traces.isdisjoint(right_traces)
+            ):
+                edges.append(
+                    FrameCompetitionEdge(
+                        frame_id_a=left.frame_id,
+                        frame_id_b=right.frame_id,
+                        relation="compete",
+                        weight=0.65,
+                    )
+                )
             shared = left_traces & right_traces
             if shared:
                 edges.append(
@@ -753,6 +961,15 @@ def _competition_edges(
                 )
             )
     return edges
+
+
+def _local_focus_unit(frame: CandidateFrame) -> str:
+    if frame.frame_type != "local_reading" or not frame.frame_id.startswith("local_"):
+        return ""
+    rest = frame.frame_id[len("local_") :]
+    if "__" not in rest:
+        return ""
+    return rest.split("__", 1)[0]
 
 
 def _frame_for_unit(frames: list[CandidateFrame], unit_id: str) -> str:
