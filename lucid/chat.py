@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from lucid.audit.logger import content_hash
 from lucid.audit.chat import (
     ChatAuditTurn,
     append_chat_turn,
@@ -22,14 +21,15 @@ from lucid.audit.chat import (
     to_session_state,
     update_session_memory_from_turn,
 )
+from lucid.audit.logger import content_hash
 from lucid.cognition.input.perception import PerceptionConfig
-from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
+from lucid.cognition.memory.dmf import DynamicMemoryField, trace_record_from_store
+from lucid.cognition.pipe_orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.ir.common import Modality, TaskIntent
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
-from lucid.memory.dmf import DynamicMemoryField, trace_record_from_store
-from lucid.training.checkpoints import load_checkpoint, save_checkpoint
-from lucid.training.dmf import apply_lucidity_trace_feedback, learn_from_episode
+from lucid.training.checkpoint.store import load_checkpoint, save_checkpoint
+from lucid.training.learn.dmf import apply_lucidity_trace_feedback, learn_from_episode
 
 
 @dataclass(slots=True)
@@ -43,11 +43,7 @@ class ChatTurnResult:
     dmf_learning: dict[str, object] | None = None
 
 
-def start_session(
-    *,
-    session_id: str | None = None,
-    audit_dir: str | Path = "audit/chat",
-) -> str:
+def start_session(*, session_id: str | None = None, audit_dir: str | Path = "audit/chat") -> str:
     sid = session_id or f"chat-{uuid4()}"
     record = load_chat_record(audit_dir, sid)
     if record is None:
@@ -86,18 +82,11 @@ def run_chat_turn(
         start_session(session_id=session_id, audit_dir=audit_dir)
         record = load_chat_record(audit_dir, session_id)
     assert record is not None
-    memory = load_session_memory(audit_dir, session_id)
-    if memory is None:
-        memory = new_session_memory(session_id)
-        save_session_memory(audit_dir, memory)
+    memory = load_session_memory(audit_dir, session_id) or new_session_memory(session_id)
 
     turn_index = len(record.turns) + 1
     refresh_history_views(record)
-    session_context = build_session_context(
-        record,
-        memory,
-        current_turn_index=turn_index,
-    )
+    session_context = build_session_context(record, memory, current_turn_index=turn_index)
     episode = Episode(
         episode_id=f"{session_id}-turn-{turn_index:04d}",
         modality=Modality.TEXT,
@@ -132,20 +121,17 @@ def run_chat_turn(
         turn_index=turn_index,
         session_state=to_session_state(record, memory),
     )
-    assistant_output = ""
-    if run.decoder_output is not None:
-        assistant_output = run.decoder_output.surface_text
+    assistant_output = run.decoder_output.surface_text if run.decoder_output is not None else ""
     if not assistant_output:
         assistant_output = "(no decoder output)"
+
     response_source = "pipeline"
     memory_reply = memory_reply_for_text(text, memory)
     if memory_reply and _pipeline_output_needs_memory_fallback(assistant_output):
         assistant_output = memory_reply
         response_source = "session_memory"
 
-    lucidity_decision = ""
-    if run.lucidity_output is not None:
-        lucidity_decision = run.lucidity_output.decision.value
+    lucidity_decision = run.lucidity_output.decision.value if run.lucidity_output is not None else ""
 
     dmf_learning: dict[str, object] | None = None
     if learn_to_dmf:
@@ -170,19 +156,11 @@ def run_chat_turn(
         dmf_learning=dmf_learning or {},
         response_source=response_source,
     )
-    memory_events = update_session_memory_from_turn(
-        memory,
-        turn,
-        lucidity_decision=lucidity_decision,
-    )
-    turn.memory_events = [to_dict(event) for event in memory_events]
+    events = update_session_memory_from_turn(memory, turn, lucidity_decision=lucidity_decision)
+    turn.memory_events = [to_dict(event) for event in events]
     save_session_memory(audit_dir, memory)
 
-    updated = append_chat_turn(
-        audit_dir,
-        session_id=session_id,
-        turn=turn,
-    )
+    updated = append_chat_turn(audit_dir, session_id=session_id, turn=turn)
     return ChatTurnResult(
         session_id=session_id,
         turn_index=turn_index,
@@ -206,13 +184,7 @@ def _learn_turn_into_dmf(
     learning_rate: float,
 ) -> dict[str, object]:
     if cue_cloud is None:
-        return {
-            "action": "defer",
-            "reason": "missing_cue_cloud",
-            "checkpoint": checkpoint,
-            "updated_trace_indices": [],
-            "promoted_trace_indices": [],
-        }
+        return {"action": "defer", "reason": "missing_cue_cloud", "checkpoint": checkpoint}
 
     state = load_checkpoint(checkpoint, create=True)
     tracebank_store = state.ensure_store("tracebank")
@@ -226,17 +198,8 @@ def _learn_turn_into_dmf(
         audit_base_dir=Path(audit_dir) / session_id / "dmf_learning",
     )
     before_hash = content_hash(tracebank_store)
-    updated = learn_from_episode(
-        dmf,
-        cue_cloud,  # type: ignore[arg-type]
-        learning_rate=learning_rate,
-        spawn_if_novel=True,
-    )
-    promoted = apply_lucidity_trace_feedback(
-        dmf,
-        updated,
-        passed_lucidity=passed_lucidity,
-    )
+    updated = learn_from_episode(dmf, cue_cloud, learning_rate=learning_rate, spawn_if_novel=True)  # type: ignore[arg-type]
+    promoted = apply_lucidity_trace_feedback(dmf, updated, passed_lucidity=passed_lucidity)
 
     tracebank_store["records"] = [_trace_record_to_store(trace) for trace in dmf.tracebank]
     tracebank_store["next_id"] = _next_store_id(tracebank_store["records"])

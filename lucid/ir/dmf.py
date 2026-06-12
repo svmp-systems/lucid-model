@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from lucid.ir.common import ComputePolicy, Provenance
 from lucid.ir.cue import CueCloud
@@ -61,6 +62,7 @@ class DmfOutput:
     activation_entropy: float = 0.0
     coverage_score: float = 0.0
     adjusted_activations: dict[str, float] = field(default_factory=dict)
+    activation_reasons: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     uncertainty_summary: str = ""
     tracebank_snapshot_id: str = ""
     provenance: Provenance = field(default_factory=Provenance)

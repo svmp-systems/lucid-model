@@ -11,8 +11,8 @@ from lucid.audit.direct_run import safe_token, utc_now_iso
 from lucid.audit.logger import content_hash
 from lucid.audit.sanitize import sanitize_audit_value
 from lucid.ir.serde import to_dict, to_json
-from lucid.memory.dmf import DmfAuditEvent
-from lucid.paths import DEFAULT_AUDIT_DMF, resolve_train_path
+from lucid.cognition.memory.dmf import DmfAuditEvent
+from lucid.runtime.paths import DEFAULT_AUDIT_DMF, resolve_train_path
 
 SCHEMA_VERSION = 2
 

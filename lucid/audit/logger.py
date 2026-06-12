@@ -10,9 +10,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from lucid.audit.stage_summary import build_run_narrative, summarize_stage_output
 from lucid.ir.common import AuditEnvelope, Provenance
 from lucid.ir.pipeline import PipelineRun, RunContext, StageName
 from lucid.ir.serde import from_dict, to_dict, to_json
+from lucid.runtime.paths import resolve_train_path
 
 SCHEMA_VERSION = 1
 
@@ -84,142 +86,6 @@ def resolve_run_dir(base_dir: Path | str, context: RunContext) -> Path:
     return base / context.run_id
 
 
-# --- Human summaries (embedded in JSON files) ---
-
-
-def summarize_stage_output(stage_name: str, output: Any) -> dict[str, Any]:
-    """Short summary block stored inside each stage .json file."""
-    if output is None:
-        return {"headline": "no output", "lines": ["(no output)"]}
-
-    data = to_dict(output) if not isinstance(output, dict) else output
-    lines: list[str] = []
-
-    if stage_name == "perception":
-        units = data.get("candidate_units") or []
-        flags = data.get("uncertainty_flags") or []
-        lines.append(f"candidate_units: {len(units)}")
-        lines.append(f"uncertainty_flags: {len(flags)}")
-        surfaces = [u.get("surface", "") for u in units[:6] if u.get("surface")]
-        if surfaces:
-            lines.append(f"surfaces: {', '.join(surfaces)}")
-        headline = f"{len(units)} units"
-        if surfaces:
-            headline += f" ({', '.join(surfaces[:3])})"
-
-    elif stage_name == "cue_encoder":
-        prim = len(data.get("primitive_trace_activations") or [])
-        rel = len(data.get("relational_trace_activations") or [])
-        lines.append(f"primitive_activations: {prim}")
-        lines.append(f"relational_activations: {rel}")
-        headline = f"{prim} primitive, {rel} relational activations"
-
-    elif stage_name == "dmf":
-        n = len(data.get("active_traces") or [])
-        margin = data.get("top_margin", 0.0)
-        lines.append(f"active_traces: {n}")
-        lines.append(f"top_margin: {margin}")
-        headline = f"{n} active traces, margin {margin}"
-
-    elif stage_name == "binding":
-        n = len(data.get("candidate_frames") or [])
-        score = data.get("binding_stability_score", 0.0)
-        lines.append(f"candidate_frames: {n}")
-        lines.append(f"binding_stability_score: {score}")
-        headline = f"{n} candidate frames"
-
-    elif stage_name == "context_op":
-        ctx = len(data.get("context_frames") or [])
-        scoped = len(data.get("scoped_trace_assignments") or [])
-        links = len(data.get("frame_links") or [])
-        gates = len(data.get("interference_gates") or [])
-        pressure = len(data.get("local_basin_pressures") or [])
-        lines.append(f"context_frames: {ctx}")
-        lines.append(f"scoped_trace_assignments: {scoped}")
-        lines.append(f"frame_links: {links}")
-        lines.append(f"interference_gates: {gates}")
-        lines.append(f"local_basin_pressures: {pressure}")
-        notes = data.get("audit_notes") or []
-        if notes:
-            lines.append(f"audit: {notes[0]}")
-        headline = f"{ctx} context frames, {scoped} scoped traces, {gates} gates"
-
-    elif stage_name == "interference":
-        tt = len(data.get("trace_trace_edges") or [])
-        tf = len(data.get("trace_frame_edges") or [])
-        fb = len(data.get("frame_basin_edges") or [])
-        scoped = len(data.get("scoped_basin_energy_deltas") or [])
-        conflicts = len(data.get("conflict_reports") or [])
-        lines.append(f"trace_trace_edges: {tt}")
-        lines.append(f"trace_frame_edges: {tf}")
-        lines.append(f"frame_basin_edges: {fb}")
-        lines.append(f"scoped_basin_energy_deltas: {scoped}")
-        lines.append(f"conflict_reports: {conflicts}")
-        notes = data.get("audit_notes") or []
-        if notes:
-            lines.append(f"audit: {notes[0]}")
-        headline = f"{tt} trace edges, {scoped} scoped basin deltas, {conflicts} conflicts"
-
-    elif stage_name == "basins":
-        basins = data.get("candidate_basin_states") or []
-        summary = data.get("competition_summary") or {}
-        top = summary.get("top_basin_id", "")
-        margin = summary.get("top_margin", 0.0)
-        lines.append(f"candidate_basin_states: {len(basins)}")
-        lines.append(f"top_basin: {top}")
-        lines.append(f"top_margin: {margin}")
-        headline = f"{len(basins)} basins; top {top or '-'} (margin {margin})"
-
-    elif stage_name == "lucidity":
-        decision = data.get("decision", "")
-        committed = data.get("committed_state") or {}
-        primary = committed.get("primary_basin_id", "") if isinstance(committed, dict) else ""
-        lines.append(f"decision: {decision}")
-        if primary:
-            lines.append(f"primary_basin_id: {primary}")
-        headline = f"decision: {decision}"
-
-    elif stage_name == "projector":
-        n = len(data.get("rollouts") or [])
-        best = data.get("best_rollout_id", "")
-        lines.append(f"rollouts: {n}")
-        lines.append(f"best_rollout_id: {best}")
-        headline = f"{n} rollouts"
-
-    elif stage_name == "decoder":
-        refused = data.get("refused", False)
-        report = data.get("faithfulness_report") or {}
-        if isinstance(report, dict):
-            passed = report.get("passed", True)
-            lines.append(f"faithfulness: {'pass' if passed else 'fail'}")
-            violations = report.get("policy_violations") or []
-            if violations:
-                lines.append(f"violations: {', '.join(str(v) for v in violations[:3])}")
-        render_mode = data.get("render_mode", "")
-        if render_mode:
-            lines.append(f"render_mode: {render_mode}")
-        grid = data.get("surface_grid")
-        if isinstance(grid, list) and grid and isinstance(grid[0], list):
-            rows = len(grid)
-            cols = len(grid[0]) if grid[0] else 0
-            lines.append(f"surface_grid: {rows}x{cols}")
-            headline = f"grid {rows}x{cols}"
-        else:
-            text = (data.get("surface_text") or "").strip()
-            lines.append(f"refused: {refused}")
-            if text:
-                preview = text[:120] + ("…" if len(text) > 120 else "")
-                lines.append(f"surface_text: {preview}")
-            headline = "refused" if refused else (text[:60] + "…" if len(text) > 60 else text or "empty")
-
-    else:
-        keys = ", ".join(sorted(data.keys())[:8])
-        lines.append(f"fields: {keys}")
-        headline = stage_name
-
-    return {"headline": headline, "lines": lines}
-
-
 def _build_manifest_summary(manifest: RunAuditManifest) -> dict[str, Any]:
     stage_lines = []
     for ref in manifest.stages:
@@ -255,7 +121,11 @@ def _stage_record(
 ) -> dict[str, Any]:
     """On-disk shape: meta + summary first, then input/output for machines."""
     output = envelope.payload.get("output")
-    summary = summarize_stage_output(envelope.stage_name, output)
+    summary = summarize_stage_output(
+        envelope.stage_name,
+        output,
+        stage_input=envelope.payload.get("input"),
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": envelope.run_id,
@@ -300,7 +170,7 @@ class AuditLogger:
     """Persists stage audits as readable JSON under audit/runs/{run_id}/."""
 
     def __init__(self, base_dir: Path | str = "audit", *, adapter_version: str = "0.1.0") -> None:
-        self.base_dir = Path(base_dir)
+        self.base_dir = resolve_train_path(base_dir)
         self.adapter_version = adapter_version
 
     def run_directory(self, context: RunContext) -> Path:
@@ -489,6 +359,19 @@ class AuditLogger:
         headline = manifest.summary.get("headline", "")
         readme_text = "\n".join([headline, "=" * len(headline), ""] + readme_lines) + "\n"
         (run_dir / "README.txt").write_text(readme_text, encoding="utf-8")
+
+        narrative_records: list[tuple[str, dict[str, Any]]] = []
+        for ref in refs:
+            record_path = run_dir / ref.file_name
+            if record_path.is_file():
+                narrative_records.append(
+                    (ref.stage_name, json.loads(record_path.read_text(encoding="utf-8")))
+                )
+        if narrative_records:
+            (run_dir / "narrative.txt").write_text(
+                build_run_narrative(narrative_records),
+                encoding="utf-8",
+            )
 
         context.audit_dir = str(run_dir)
         return run_dir

@@ -8,11 +8,20 @@ links, soft basin-family pressure, and gates for the interference stage.
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Iterable
+import json
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Iterable
 
+from lucid.cognition.reasoning.cue_routes import (
+    competing_units,
+    evidence_cue_routes,
+    has_competing_routes,
+)
+from lucid.cognition.memory.basin_bank import normalize_family_hint
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy
+from lucid.ir.cue import CueCloud
 from lucid.ir.context_op import (
     ContextFrame,
     ContextOpInput,
@@ -24,16 +33,28 @@ from lucid.ir.context_op import (
 )
 from lucid.ir.dmf import ActiveTrace
 from lucid.ir.perception import CandidateRegion, PerceptualEvidenceGraph
+from lucid.training.checkpoint.store import STORE_FILES
 
 
-def run_context_op(inp: ContextOpInput) -> ContextOpOutput:
+@dataclass(slots=True)
+class ContextOpConfig:
+    checkpoint: str | Path | None = None
+
+
+def run_context_op(
+    inp: ContextOpInput,
+    *,
+    config: ContextOpConfig | None = None,
+) -> ContextOpOutput:
     """Build local context scopes from binding frames and perception hints."""
-    operator = ContextOperator()
-    return operator.run(inp)
+    return ContextOperator(config or ContextOpConfig()).run(inp)
 
 
 class ContextOperator:
     """Deterministic context-op implementation for the Lucid pipeline."""
+
+    def __init__(self, config: ContextOpConfig) -> None:
+        self._gate_patterns = _load_gate_patterns(config.checkpoint)
 
     def run(self, inp: ContextOpInput) -> ContextOpOutput:
         context_frames = self._build_context_frames(
@@ -317,6 +338,11 @@ class ContextOperator:
                 if self._should_block_trace(trace_id, allowed, conflict_pairs, context, inp):
                     blocked.add(trace_id)
 
+            allowed, blocked = self._apply_learned_gate_patterns(
+                context.context_frame_id,
+                allowed,
+                blocked,
+            )
             gates.append(
                 InterferenceGate(
                     gate_id=f"gate_{context.context_frame_id}",
@@ -328,6 +354,26 @@ class ContextOperator:
             )
         return gates
 
+    def _apply_learned_gate_patterns(
+        self,
+        scope_frame_id: str,
+        allowed: set[str],
+        blocked: set[str],
+    ) -> tuple[set[str], set[str]]:
+        for pattern in self._gate_patterns:
+            pattern_scope = _context_id(str(pattern.get("scope_frame_id") or ""))
+            if pattern_scope != scope_frame_id:
+                continue
+            for trace_id in pattern.get("allowed_trace_ids") or []:
+                token = str(trace_id).strip()
+                if token:
+                    allowed.add(token)
+            for trace_id in pattern.get("blocked_trace_ids") or []:
+                token = str(trace_id).strip()
+                if token:
+                    blocked.add(token)
+        return allowed, blocked
+
     def _should_block_trace(
         self,
         trace_id: str,
@@ -338,10 +384,8 @@ class ContextOperator:
     ) -> bool:
         if any(tuple(sorted((trace_id, allowed_id))) in conflict_pairs for allowed_id in allowed):
             return True
-        if "RECHECK_BINDING" in {item.upper() for item in inp.lucidity_feedback}:
-            return False
-        notes = context.scope_notes.lower()
-        return _is_context_leak(trace_id, notes)
+        _ = context
+        return False
 
     def _build_local_pressures(
         self,
@@ -352,7 +396,7 @@ class ContextOperator:
         assignment_map = {
             assignment.trace_id: assignment for assignment in assignments
         }
-        active_weight = {trace.trace_id: trace.activation for trace in inp.dmf_output.active_traces}
+        active_by_id = {trace.trace_id: trace for trace in inp.dmf_output.active_traces}
         pressures: list[LocalBasinPressure] = []
 
         for context in context_frames:
@@ -364,9 +408,28 @@ class ContextOperator:
                 or context.context_frame_id in assignment.secondary_context_frame_ids
             ]
             for trace_id in traces:
-                for family, factor in _family_hints(trace_id, context.scope_notes).items():
-                    weight = round(min(1.0, active_weight.get(trace_id, 0.5) * factor), 3)
+                trace = active_by_id.get(trace_id)
+                labels: list[str] = []
+                if trace and trace.cluster_id:
+                    labels.append(trace.cluster_id)
+                labels.append(_clean_token(trace_id))
+                for label in labels:
+                    family = normalize_family_hint(label)
+                    if not family:
+                        continue
+                    weight = round(
+                        min(1.0, (trace.activation if trace else 0.5) * 0.8),
+                        3,
+                    )
                     hints[family] = max(hints.get(family, 0.0), weight)
+
+            if inp.cue_cloud is not None:
+                for family, factor in _hints_from_competing_routes(
+                    inp.cue_cloud,
+                    context,
+                    inp.binding_candidate_frames,
+                ).items():
+                    hints[family] = max(hints.get(family, 0.0), round(factor, 3))
 
             if context.member_frame_ids:
                 for frame in inp.binding_candidate_frames:
@@ -388,12 +451,24 @@ class ContextOperator:
         if self._has_feedback(inp, "RECHECK_BINDING"):
             return AmbiguityPolicy.PRESERVE_PLURAL
         has_unresolved = any(frame.unresolved_slot_names for frame in inp.binding_candidate_frames)
-        has_uncertainty = bool(inp.perceptual_evidence_graph.uncertainty_flags)
+        evidence_refs = {
+            ref
+            for frame in inp.binding_candidate_frames
+            for ref in frame.member_evidence_refs
+        }
+        has_route_competition = has_competing_routes(inp.cue_cloud, evidence_refs)
         high_margin = inp.dmf_output.top_margin >= 0.6
         stable_frames = all(frame.confidence >= 0.65 for frame in inp.binding_candidate_frames)
-        if inp.binding_candidate_frames and high_margin and stable_frames and not has_unresolved:
-            if not has_uncertainty:
-                return AmbiguityPolicy.ALLOW_NARROW
+        low_dmf_uncertainty = inp.dmf_output.uncertainty_summary != "high"
+        if (
+            inp.binding_candidate_frames
+            and high_margin
+            and stable_frames
+            and not has_unresolved
+            and not has_route_competition
+            and low_dmf_uncertainty
+        ):
+            return AmbiguityPolicy.ALLOW_NARROW
         return AmbiguityPolicy.PRESERVE_PLURAL
 
     def _compute_policy(
@@ -534,35 +609,48 @@ def _gate_reason(context: ContextFrame, allowed: set[str], blocked: set[str]) ->
     return reason
 
 
-def _is_context_leak(trace_id: str, scope_notes: str) -> bool:
-    token = _clean_token(trace_id)
-    outdoor = {"kayak", "kayaking", "river", "canoe", "canoeing", "fishing", "swimming"}
-    finance = {"bank", "deposit", "deposited", "money", "cash", "funds", "savings"}
-    if token in outdoor and any(word in scope_notes for word in finance):
-        return True
-    if token in finance and any(word in scope_notes for word in outdoor):
-        return True
-    return False
+def _load_gate_patterns(checkpoint: str | Path | None) -> list[dict[str, Any]]:
+    if not checkpoint:
+        return []
+    path = Path(checkpoint) / STORE_FILES["context_policy"]
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    patterns = payload.get("gate_patterns") or []
+    return [pattern for pattern in patterns if isinstance(pattern, dict)]
 
 
-def _family_hints(trace_id: str, scope_notes: str) -> dict[str, float]:
-    token = _clean_token(trace_id)
-    text = f"{token} {scope_notes}".lower()
+def _scope_evidence_refs(
+    context: ContextFrame,
+    frames: list[CandidateFrame],
+) -> set[str]:
+    evidence_refs: set[str] = set()
+    for frame in frames:
+        if context.member_frame_ids and frame.frame_id not in context.member_frame_ids:
+            continue
+        evidence_refs.update(frame.member_evidence_refs)
+        for refs in frame.slot_evidence_refs.values():
+            evidence_refs.update(refs)
+    return evidence_refs
+
+
+def _hints_from_competing_routes(
+    cue_cloud: CueCloud,
+    context: ContextFrame,
+    frames: list[CandidateFrame],
+) -> dict[str, float]:
+    """Local basin pressure from plural cue routes on in-scope evidence."""
+
     hints: dict[str, float] = {}
-
-    if any(word in text for word in ("money", "cash", "fund", "saving", "deposit", "bank")):
-        hints["financial_destination_like"] = 0.8
-        hints["storage_like"] = 0.6
-    if any(word in text for word in ("river", "kayak", "canoe", "fishing", "swimming", "outdoor")):
-        hints["outdoor_context_like"] = 0.75
-        hints["water_activity_like"] = 0.65
-    if any(word in text for word in ("move", "position", "shift", "left", "right", "up", "down")):
-        hints["position_shift_like"] = 0.8
-    if any(word in text for word in ("color", "recolor", "attribute")):
-        hints["attribute_change_like"] = 0.75
-    if any(word in text for word in ("symbol", "glyph", "legend", "key", "region")):
-        hints["symbol_region_like"] = 0.7
-    if any(word in text for word in ("reference", "carry", "pronoun", "shared")):
-        hints["shared_referent_like"] = 0.7
-
+    evidence_refs = _scope_evidence_refs(context, frames)
+    routes = evidence_cue_routes(cue_cloud)
+    competing = competing_units(cue_cloud)
+    for unit_id in evidence_refs:
+        if unit_id not in competing:
+            continue
+        for cue_key, weight in routes.get(unit_id, []):
+            family = normalize_family_hint(cue_key)
+            if not family:
+                continue
+            hints[family] = max(hints.get(family, 0.0), round(min(1.0, weight), 3))
     return hints

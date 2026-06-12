@@ -13,7 +13,7 @@ dependencies = []
 [project.scripts]
 lucid = "lucid.cli:main"
 lucid-inspect = "lucid.audit.inspect:main"
-lucid-gen = "lucid.training.generator.cli:main"
+lucid-gen = "lucid.training.corpus.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
@@ -22,7 +22,7 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 packages = ["lucid"]
 
 [tool.pytest.ini_options]
-testpaths = ["train/tests"]
+testpaths = ["lucid/training/tests"]
 pythonpath = ["."]
 
 [tool.ruff]
