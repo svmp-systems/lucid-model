@@ -1,25 +1,16 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle, Plus, ScrollText, Send, Trash2 } from "lucide-react";
 
 import type { ChatMessage, ChatSession, CheckpointVersion } from "@/src/types";
 
-const STORAGE_KEY = "etoise-sessions-v1";
+const CHECKPOINT_PREFS_KEY = "etoise-checkpoint-prefs-v1";
 const DEFAULT_CHECKPOINT = "loaded";
-
-const STARTER_SESSIONS: ChatSession[] = [
-  {
-    id: "etoise-session",
-    title: "Untitled session",
-    checkpointVersion: DEFAULT_CHECKPOINT,
-    messages: []
-  }
-];
 
 function createEmptySession(checkpointVersion = DEFAULT_CHECKPOINT): ChatSession {
   return {
-    id: `session-${Date.now()}`,
+    id: "",
     title: "Untitled session",
     checkpointVersion,
     messages: []
@@ -31,50 +22,42 @@ function shortTitle(text: string) {
   return clean.length > 34 ? `${clean.slice(0, 34).trim()}...` : clean || "Untitled session";
 }
 
-function makeMessage(role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage {
-  return {
-    id: crypto.randomUUID(),
-    role,
-    content,
-    ...extra
-  };
+function loadCheckpointPrefs(): Record<string, string> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  const saved = window.localStorage.getItem(CHECKPOINT_PREFS_KEY);
+  if (!saved) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(saved) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    const prefs: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof key === "string" && typeof value === "string" && value) {
+        prefs[key] = value;
+      }
+    }
+    return prefs;
+  } catch {
+    return {};
+  }
 }
 
-function normalizeSessions(value: unknown): ChatSession[] {
-  if (!Array.isArray(value)) {
-    return STARTER_SESSIONS;
-  }
-
-  const sessions = value
-    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-    .map((item) => ({
-      id: typeof item.id === "string" ? item.id : `session-${Date.now()}`,
-      title: typeof item.title === "string" ? item.title : "Untitled session",
-      checkpointVersion:
-        typeof item.checkpointVersion === "string" ? item.checkpointVersion : DEFAULT_CHECKPOINT,
-      messages: Array.isArray(item.messages)
-        ? item.messages.filter((message): message is ChatMessage => {
-            return Boolean(
-              message &&
-                typeof message === "object" &&
-                typeof (message as ChatMessage).id === "string" &&
-                ((message as ChatMessage).role === "user" ||
-                  (message as ChatMessage).role === "assistant") &&
-                typeof (message as ChatMessage).content === "string"
-            );
-          })
-        : []
-    }));
-
-  return sessions.length ? sessions : STARTER_SESSIONS;
+function saveCheckpointPrefs(prefs: Record<string, string>) {
+  window.localStorage.setItem(CHECKPOINT_PREFS_KEY, JSON.stringify(prefs));
 }
 
 export default function Home() {
-  const [sessions, setSessions] = useState<ChatSession[]>(STARTER_SESSIONS);
-  const [activeId, setActiveId] = useState(STARTER_SESSIONS[0].id);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeId, setActiveId] = useState("");
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [checkpointPrefs, setCheckpointPrefs] = useState<Record<string, string>>({});
   const [checkpoints, setCheckpoints] = useState<CheckpointVersion[]>([
     { id: DEFAULT_CHECKPOINT, label: "Loaded", detail: "Pinned inference slot", isDefault: true }
   ]);
@@ -82,19 +65,35 @@ export default function Home() {
   const [selectedAuditId, setSelectedAuditId] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const nextSessions = normalizeSessions(JSON.parse(saved));
-        setSessions(nextSessions);
-        setActiveId(nextSessions[0].id);
-      } catch {
-        window.localStorage.removeItem(STORAGE_KEY);
-      }
+  const reloadSessions = useCallback(async (prefs: Record<string, string>) => {
+    const query = new URLSearchParams({
+      checkpointPrefs: JSON.stringify(prefs)
+    });
+    const response = await fetch(`/api/sessions?${query.toString()}`);
+    if (!response.ok) {
+      throw new Error("Failed to load sessions");
     }
-    setLoaded(true);
+    const data = (await response.json()) as { sessions?: ChatSession[] };
+    const nextSessions = Array.isArray(data.sessions) ? data.sessions : [];
+    setSessions(nextSessions);
+    setActiveId((current) => {
+      if (current && nextSessions.some((session) => session.id === current)) {
+        return current;
+      }
+      return nextSessions[0]?.id || "";
+    });
   }, []);
+
+  useEffect(() => {
+    const prefs = loadCheckpointPrefs();
+    setCheckpointPrefs(prefs);
+    reloadSessions(prefs)
+      .catch(() => {
+        setSessions([]);
+        setActiveId("");
+      })
+      .finally(() => setLoaded(true));
+  }, [reloadSessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,13 +106,6 @@ export default function Home() {
         const data = (await response.json()) as { checkpoints?: CheckpointVersion[] };
         if (!cancelled && Array.isArray(data.checkpoints) && data.checkpoints.length) {
           setCheckpoints(data.checkpoints);
-          setSessions((current) =>
-            current.map((session) =>
-              session.checkpointVersion === DEFAULT_CHECKPOINT && data.checkpoints?.[0]?.id
-                ? { ...session, checkpointVersion: data.checkpoints[0].id }
-                : session
-            )
-          );
         }
       } catch {
         // Keep the local default when checkpoint discovery is unavailable.
@@ -127,9 +119,9 @@ export default function Home() {
 
   useEffect(() => {
     if (loaded) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+      saveCheckpointPrefs(checkpointPrefs);
     }
-  }, [loaded, sessions]);
+  }, [loaded, checkpointPrefs]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeId) || sessions[0],
@@ -140,7 +132,7 @@ export default function Home() {
     const messages = activeSession?.messages || [];
     return (
       messages.find((message) => message.id === selectedAuditId && message.auditLog) ||
-      [...messages].reverse().find((message) => message.auditLog)
+      [...messages].reverse().find((message) => message.auditLog || message.runAuditDir)
     );
   }, [activeSession, selectedAuditId]);
 
@@ -154,21 +146,43 @@ export default function Home() {
     );
   }
 
-  function startNewChat() {
-    const session = createEmptySession(checkpoints[0]?.id || DEFAULT_CHECKPOINT);
-    setSessions((current) => [session, ...current]);
-    setActiveId(session.id);
-    setSelectedAuditId("");
-    setInput("");
+  async function startNewChat() {
+    const checkpointVersion = checkpoints[0]?.id || DEFAULT_CHECKPOINT;
+    try {
+      const response = await fetch("/api/sessions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ checkpointVersion })
+      });
+      if (!response.ok) {
+        throw new Error("Failed to create session");
+      }
+      const data = (await response.json()) as { session?: ChatSession };
+      const session = data.session || createEmptySession(checkpointVersion);
+      const nextPrefs = { ...checkpointPrefs, [session.id]: session.checkpointVersion || checkpointVersion };
+      setCheckpointPrefs(nextPrefs);
+      setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+      setActiveId(session.id);
+      setSelectedAuditId("");
+      setInput("");
+    } catch {
+      // Keep the UI responsive even if session creation fails.
+    }
   }
 
   function deleteSession(sessionId: string) {
     const remaining = sessions.filter((session) => session.id !== sessionId);
+    const nextPrefs = { ...checkpointPrefs };
+    delete nextPrefs[sessionId];
+    setCheckpointPrefs(nextPrefs);
+
     if (remaining.length === 0) {
-      const replacement = createEmptySession(checkpoints[0]?.id || DEFAULT_CHECKPOINT);
-      setSessions([replacement]);
-      setActiveId(replacement.id);
+      setSessions([]);
+      setActiveId("");
       setSelectedAuditId("");
+      void startNewChat();
       return;
     }
 
@@ -183,25 +197,30 @@ export default function Home() {
     if (!activeSession) {
       return;
     }
+    const nextPrefs = { ...checkpointPrefs, [activeSession.id]: checkpointVersion };
+    setCheckpointPrefs(nextPrefs);
     updateSession({ ...activeSession, checkpointVersion });
   }
 
   async function submitMessage(event?: FormEvent) {
     event?.preventDefault();
-    if (!activeSession || !input.trim() || isSending) {
+    if (!activeSession?.id || !input.trim() || isSending) {
       return;
     }
 
-    const userMessage = makeMessage("user", input.trim(), {
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: input.trim(),
       checkpointVersion: activeSession.checkpointVersion
-    });
-    const nextSession: ChatSession = {
+    };
+    const optimisticSession: ChatSession = {
       ...activeSession,
       title: activeSession.messages.length === 0 ? shortTitle(userMessage.content) : activeSession.title,
       messages: [...activeSession.messages, userMessage]
     };
 
-    updateSession(nextSession);
+    updateSession(optimisticSession);
     setInput("");
     setIsSending(true);
 
@@ -213,14 +232,14 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: userMessage.content,
-          sessionId: nextSession.id,
-          checkpointVersion: nextSession.checkpointVersion,
-          history: nextSession.messages
+          sessionId: optimisticSession.id,
+          checkpointVersion: optimisticSession.checkpointVersion
         })
       });
 
       if (!response.ok) {
-        throw new Error("Request failed");
+        const errorBody = (await response.json()) as { error?: string };
+        throw new Error(errorBody.error || "Request failed");
       }
 
       const data = (await response.json()) as {
@@ -229,26 +248,57 @@ export default function Home() {
         runAuditDir?: string;
         lucidityDecision?: string;
         checkpointVersion?: string;
+        turnIndex?: number;
       };
-      const assistantMessage = makeMessage("assistant", data.assistantOutput || "(no decoder output)", {
+
+      const sessionResponse = await fetch(
+        `/api/sessions/${encodeURIComponent(optimisticSession.id)}?checkpointVersion=${encodeURIComponent(
+          optimisticSession.checkpointVersion
+        )}`
+      );
+      if (sessionResponse.ok) {
+        const sessionData = (await sessionResponse.json()) as { session?: ChatSession };
+        if (sessionData.session) {
+          updateSession(sessionData.session);
+          const lastAssistant = [...sessionData.session.messages]
+            .reverse()
+            .find((message) => message.role === "assistant");
+          if (lastAssistant) {
+            setSelectedAuditId(lastAssistant.id);
+          }
+          return;
+        }
+      }
+
+      const assistantMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: data.assistantOutput || "(no decoder output)",
         auditLog: data.auditLog,
         runAuditDir: data.runAuditDir,
         lucidityDecision: data.lucidityDecision,
-        checkpointVersion: data.checkpointVersion || nextSession.checkpointVersion
-      });
+        checkpointVersion: data.checkpointVersion || optimisticSession.checkpointVersion,
+        turnIndex: data.turnIndex
+      };
       updateSession({
-        ...nextSession,
-        messages: [...nextSession.messages, assistantMessage]
+        ...optimisticSession,
+        messages: [...optimisticSession.messages, assistantMessage]
       });
       setSelectedAuditId(assistantMessage.id);
-    } catch {
+    } catch (error) {
       updateSession({
-        ...nextSession,
+        ...optimisticSession,
         messages: [
-          ...nextSession.messages,
-          makeMessage("assistant", "The local runtime did not return a response.", {
-            checkpointVersion: nextSession.checkpointVersion
-          })
+          ...optimisticSession.messages,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content:
+              error instanceof Error
+                ? `The chat runtime did not return a response: ${error.message}`
+                : "The chat runtime did not return a response.",
+            checkpointVersion: optimisticSession.checkpointVersion
+          }
         ]
       });
     } finally {
@@ -256,8 +306,35 @@ export default function Home() {
     }
   }
 
-  if (!activeSession) {
+  if (!loaded) {
     return null;
+  }
+
+  if (!activeSession) {
+    return (
+      <main className="etoise-app">
+        <header className="top-header">
+          <div className="brand">
+            <span className="crescent" aria-hidden="true" />
+            <span>Etoise</span>
+          </div>
+        </header>
+        <div className="body">
+          <aside className="sidebar">
+            <button className="new-chat" type="button" onClick={() => void startNewChat()}>
+              <Plus size={20} strokeWidth={2} />
+              <span>New Session</span>
+            </button>
+          </aside>
+          <section className="chat-panel">
+            <div className="empty-state">
+              <span className="assistant-mark" aria-hidden="true" />
+              <div className="assistant-bubble">Start a session to begin chatting.</div>
+            </div>
+          </section>
+        </div>
+      </main>
+    );
   }
 
   const isEmpty = activeSession.messages.length === 0;
@@ -277,7 +354,7 @@ export default function Home() {
 
       <div className="body">
         <aside className="sidebar">
-          <button className="new-chat" type="button" onClick={startNewChat}>
+          <button className="new-chat" type="button" onClick={() => void startNewChat()}>
             <Plus size={20} strokeWidth={2} />
             <span>New Session</span>
           </button>
@@ -355,7 +432,10 @@ export default function Home() {
                       <span className="assistant-mark" aria-hidden="true" />
                       <div className="assistant-stack">
                         <div className="assistant-bubble">{message.content}</div>
-                        {(message.auditLog || message.lucidityDecision || message.checkpointVersion) && (
+                        {(message.auditLog ||
+                          message.runAuditDir ||
+                          message.lucidityDecision ||
+                          message.checkpointVersion) && (
                           <button
                             className="message-audit"
                             type="button"

@@ -8,6 +8,7 @@ export type ChatMessage = {
   runAuditDir?: string;
   lucidityDecision?: string;
   checkpointVersion?: string;
+  turnIndex?: number;
 };
 
 export type ChatSession = {
@@ -21,7 +22,6 @@ export type ChatTurnRequest = {
   message: string;
   sessionId: string;
   checkpointVersion: string;
-  history: ChatMessage[];
 };
 
 export type ChatTurnResponse = {
@@ -31,6 +31,16 @@ export type ChatTurnResponse = {
   checkpointVersion: string;
   lucidityDecision: string;
   runAuditDir: string;
+  turnIndex?: number;
+  sessionAuditPath?: string;
+};
+
+export type ServerChatSession = {
+  id: string;
+  title: string;
+  checkpointVersion: string;
+  turnCount: number;
+  messages: ChatMessage[];
 };
 
 export type CheckpointVersion = {
