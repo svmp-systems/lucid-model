@@ -15,6 +15,8 @@ from lucid.audit.smoke import (
     write_decoder_audit,
     write_lucidity_audit,
 )
+from lucid.audit.chat import load_session_memory, new_session_memory, save_session_memory
+from lucid.chat import list_sessions, run_chat_turn, start_session
 from lucid.cognition.output.decoder import run_decoder
 from lucid.cognition.output.lucidity import run_lucidity
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
@@ -965,6 +967,64 @@ def _cmd_scaling_path(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_chat_start(args: argparse.Namespace) -> int:
+    try:
+        session_id = start_session(session_id=args.session_id or None, audit_dir=args.audit_dir)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(session_id)
+    return 0
+
+
+def _cmd_chat_send(args: argparse.Namespace) -> int:
+    text = args.text if args.text is not None else sys.stdin.read().strip()
+    try:
+        result = run_chat_turn(
+            text,
+            session_id=args.session_id,
+            audit_dir=args.audit_dir,
+            perception_backend=args.perception,
+            checkpoint=args.checkpoint,
+            learn_to_dmf=args.learn_to_dmf,
+            learning_rate=args.learning_rate,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(to_json(result))
+    else:
+        print(result.assistant_output)
+        print(f"session_audit: {result.session_audit_path}", file=sys.stderr)
+        print(f"run_audit: {result.run_audit_dir}", file=sys.stderr)
+    return 0
+
+
+def _cmd_chat_list(args: argparse.Namespace) -> int:
+    try:
+        for session_id in list_sessions(audit_dir=args.audit_dir):
+            print(session_id)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def _cmd_chat_memory(args: argparse.Namespace) -> int:
+    try:
+        memory = load_session_memory(args.audit_dir, args.session_id)
+        if memory is None:
+            memory = new_session_memory(args.session_id)
+            if args.create:
+                save_session_memory(args.audit_dir, memory)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(to_json(memory))
+    return 0
+
+
 def _cmd_train(args: argparse.Namespace) -> int:
     from lucid.training.cli import main as train_main
 
@@ -1287,6 +1347,39 @@ def _build_parser() -> argparse.ArgumentParser:
 
     scaling_path = scaling_sub.add_parser("path", help="Print points.jsonl path")
     scaling_path.set_defaults(func=_cmd_scaling_path)
+
+    chat_parser = sub.add_parser("chat", help="Run audited session chat turns")
+    chat_sub = chat_parser.add_subparsers(dest="chat_cmd", required=True)
+
+    chat_start = chat_sub.add_parser("start", help="Create or reuse a chat session")
+    chat_start.add_argument("--session-id", default="", help="Use a stable caller-provided session id")
+    chat_start.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
+    chat_start.set_defaults(func=_cmd_chat_start)
+
+    chat_send = chat_sub.add_parser("send", help="Send one message into a chat session")
+    chat_send.add_argument("text", nargs="?", help="Message text, or stdin when omitted")
+    chat_send.add_argument("--session-id", required=True, help="Session id from lucid chat start")
+    chat_send.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
+    chat_send.add_argument("--perception", default="", choices=["", "rule", "llm"])
+    chat_send.add_argument("--checkpoint", default="", help="Checkpoint for runtime stores")
+    chat_send.add_argument(
+        "--learn-to-dmf",
+        action="store_true",
+        help="Persist this turn's cues into the checkpoint DMF tracebank",
+    )
+    chat_send.add_argument("--learning-rate", type=float, default=0.2)
+    chat_send.add_argument("--json", action="store_true", help="Print machine-readable turn result")
+    chat_send.set_defaults(func=_cmd_chat_send)
+
+    chat_list = chat_sub.add_parser("list", help="List chat sessions under the audit directory")
+    chat_list.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
+    chat_list.set_defaults(func=_cmd_chat_list)
+
+    chat_memory = chat_sub.add_parser("memory", help="Print one session's chat memory audit")
+    chat_memory.add_argument("--session-id", required=True, help="Session id from lucid chat start")
+    chat_memory.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
+    chat_memory.add_argument("--create", action="store_true", help="Create an empty memory file if missing")
+    chat_memory.set_defaults(func=_cmd_chat_memory)
     return parser
 
 
@@ -1315,6 +1408,7 @@ _KNOWN_COMMANDS = frozenset(
         "inspect",
         "gen",
         "scaling",
+        "chat",
     }
 )
 

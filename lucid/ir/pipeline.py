@@ -46,6 +46,10 @@ class TurnRecord:
 class SessionState:
     session_id: str
     turns: list[TurnRecord] = field(default_factory=list)
+    active_memories: list[dict[str, Any]] = field(default_factory=list)
+    active_bindings: list[dict[str, Any]] = field(default_factory=list)
+    unresolved_items: list[dict[str, Any]] = field(default_factory=list)
+    summaries: list[dict[str, Any]] = field(default_factory=list)
     carryover_evidence_refs: list[str] = field(default_factory=list)
     carryover_trace_ids: list[str] = field(default_factory=list)
     carryover_frame_ids: list[str] = field(default_factory=list)
