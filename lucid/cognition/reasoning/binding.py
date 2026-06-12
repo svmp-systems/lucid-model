@@ -14,6 +14,7 @@ from lucid.cognition.reasoning.cue_routes import (
     cue_keys_per_unit,
 )
 from lucid.runtime.paths import resolve_checkpoint
+from lucid.training.checkpoint.slots import resolve_checkpoint_ref
 from lucid.ir.binding import (
     BindingInput,
     BindingOutput,
@@ -78,7 +79,7 @@ class BindingOperator:
         self._relation_aliases: list[dict[str, Any]] = []
         self._concepts: list[dict[str, Any]] = []
         if self._affordances is None and config.checkpoint:
-            path = resolve_checkpoint(config.checkpoint)
+            path = resolve_checkpoint(resolve_checkpoint_ref(config.checkpoint))
             if path.exists():
                 self._affordances = _load_affordances(path)
                 self._operators = _load_store_list(path, "operator_bank.json", "operators")
