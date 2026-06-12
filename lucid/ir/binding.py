@@ -11,6 +11,50 @@ from lucid.ir.perception import PerceptualEvidenceGraph
 
 
 @dataclass(slots=True)
+class GraphNode:
+    node_id: str
+    node_kind: str  # entity | event | state | value | relation | constraint | concept | operator | artifact
+    label: str = ""
+    source_unit_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    payload: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class GraphEdge:
+    edge_id: str
+    edge_kind: str
+    source_id: str
+    target_id: str
+    label: str = ""
+    source_unit_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    provenance_refs: list[str] = field(default_factory=list)
+    inferred: bool = False
+    payload: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class OperatorReceipt:
+    operator_id: str
+    family: str = ""
+    matched_edge_ids: list[str] = field(default_factory=list)
+    inferred_edge_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    source: str = ""
+
+
+@dataclass(slots=True)
+class LocalGraph:
+    graph_id: str
+    family: str = "generic"
+    nodes: list[GraphNode] = field(default_factory=list)
+    edges: list[GraphEdge] = field(default_factory=list)
+    operator_receipts: list[OperatorReceipt] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class CandidateFrame:
     frame_id: str
     frame_type: str  # word_sense | event | relation | rule | transform | ...
@@ -25,6 +69,8 @@ class CandidateFrame:
     unresolved_slot_names: list[str] = field(default_factory=list)
     supporting_trace_ids: list[str] = field(default_factory=list)
     conflicting_trace_ids: list[str] = field(default_factory=list)
+    local_graphs: list[LocalGraph] = field(default_factory=list)
+    operator_receipts: list[OperatorReceipt] = field(default_factory=list)
 
 
 @dataclass(slots=True)

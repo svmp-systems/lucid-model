@@ -8,6 +8,7 @@ from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
 from lucid.runtime.paths import DEFAULT_AUDIT_TRAINING_RUNS, resolve_checkpoint, resolve_train_path
 from lucid.training.checkpoint.store import CheckpointState, load_checkpoint, save_checkpoint
+from lucid.training.checkpoint.metadata import ensure_metadata
 from lucid.training.loop.orchestrator import Patch
 from lucid.training.modules import get_trainer
 
@@ -45,6 +46,17 @@ class CheckpointPromotionHook:
         trainer = get_trainer(trainer_name)
         step_dir = self.audit_dir / f"promote_{patch.patch_id[:8]}"
         trainer.train(episode, self.state, step_dir)
+        for target in patch.target_objects or [patch.patch_id]:
+            object_id = f"{trainer_name}:{target}"
+            metadata = ensure_metadata(
+                self.state,
+                object_id,
+                trainer_name,
+                source="promoted_patch",
+                audit_refs=[str(step_dir)],
+            )
+            metadata["target_fix_count"] = int(metadata.get("target_fix_count", 0)) + 1
+            metadata["shadow_pass_count"] = int(metadata.get("shadow_pass_count", 0)) + 1
         save_checkpoint(self.state, self.checkpoint_path, force=True, step_delta=1)
 
     def summary(self) -> dict:

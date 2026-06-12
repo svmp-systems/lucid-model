@@ -19,6 +19,10 @@ STORE_FILES: dict[str, str] = {
     "basin_bank": "basin_bank.json",
     "interference_graph": "interference_graph.json",
     "binding_affordances": "binding_affordances.json",
+    "learned_metadata": "learned_metadata.json",
+    "operator_bank": "operator_bank.json",
+    "relation_aliases": "relation_aliases.json",
+    "concept_bank": "concept_bank.json",
     "context_policy": "context_policy.json",
     "lucidity_policy": "lucidity_policy.json",
     "projector_examples": "projector_examples.json",
@@ -43,6 +47,14 @@ def _empty_store(name: str) -> Any:
                 "relative_clause": "event_two",
             },
         }
+    if name == "learned_metadata":
+        return {"objects": {}}
+    if name == "operator_bank":
+        return {"operators": []}
+    if name == "relation_aliases":
+        return {"aliases": []}
+    if name == "concept_bank":
+        return {"concepts": [], "sources": []}
     if name == "context_policy":
         return {"scope_patterns": [], "gate_patterns": []}
     if name == "lucidity_policy":
@@ -163,6 +175,12 @@ def checkpoint_summary(state: CheckpointState) -> dict[str, Any]:
             "basin_bank": len(state.ensure_store("basin_bank").get("records", [])),
             "interference_gates": len(state.ensure_store("interference_graph").get("gates", [])),
             "binding_patterns": len(state.ensure_store("binding_affordances").get("patterns", [])),
+            "learned_metadata_objects": len(
+                state.ensure_store("learned_metadata").get("objects", {})
+            ),
+            "operators": len(state.ensure_store("operator_bank").get("operators", [])),
+            "relation_aliases": len(state.ensure_store("relation_aliases").get("aliases", [])),
+            "concepts": len(state.ensure_store("concept_bank").get("concepts", [])),
             "context_scope_patterns": len(
                 state.ensure_store("context_policy").get("scope_patterns", [])
             ),

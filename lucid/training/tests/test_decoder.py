@@ -262,6 +262,46 @@ def test_action_packet_renders_structured_action_language() -> None:
     assert out.faithfulness_report.passed
 
 
+def test_canvas_decoder_renders_source_backed_graph_claim() -> None:
+    packet = LucidityRenderPacket(
+        packet_id="quantum",
+        decision=LucidityDecision.COMMIT,
+        render_mode="committed",
+        output_format="text",
+        approved_units=[
+            RenderUnit(
+                unit_id="graph-claim-0",
+                unit_type="claim",
+                payload={
+                    "subject": "qubit",
+                    "relation": "type_of",
+                    "target": "unit of quantum information",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="ibm_quantum_computing")],
+            )
+        ],
+    )
+    policy = DecoderPolicy(mode=DecoderMode.EXPRESS_COMMITTED.value, output_channel="chat")
+
+    out = run_decoder(
+        DecoderInput(
+            lucidity_output=LucidityOutput(
+                decision=LucidityDecision.COMMIT,
+                decoder_policy=policy,
+                render_packet=packet,
+            ),
+            render_packet=packet,
+            decoder_policy=policy,
+        )
+    )
+
+    assert "qubit is unit of quantum information" in out.surface_text.lower()
+    assert "decoder:canvas_builder" in out.audit_notes
+    assert "decoder:route=canvas" in out.audit_notes
+    assert out.faithfulness_report.passed
+
+
 def test_committed_frame_summaries_compose_fluid_surface() -> None:
     packet = LucidityRenderPacket(
         packet_id=str(uuid4()),

@@ -13,11 +13,16 @@ from lucid.cognition.reasoning.cue_routes import (
     competing_units as plural_cue_units,
     cue_keys_per_unit,
 )
+from lucid.runtime.paths import resolve_checkpoint
 from lucid.ir.binding import (
     BindingInput,
     BindingOutput,
     CandidateFrame,
     FrameCompetitionEdge,
+    GraphEdge,
+    GraphNode,
+    LocalGraph,
+    OperatorReceipt,
 )
 from lucid.ir.cue import CueCloud
 from lucid.ir.dmf import ActiveTrace, DmfOutput
@@ -69,10 +74,16 @@ class BindingOperator:
     def __init__(self, config: BindingConfig) -> None:
         self.config = config
         self._affordances = config.affordances
+        self._operators: list[dict[str, Any]] = []
+        self._relation_aliases: list[dict[str, Any]] = []
+        self._concepts: list[dict[str, Any]] = []
         if self._affordances is None and config.checkpoint:
-            path = Path(config.checkpoint)
+            path = resolve_checkpoint(config.checkpoint)
             if path.exists():
                 self._affordances = _load_affordances(path)
+                self._operators = _load_store_list(path, "operator_bank.json", "operators")
+                self._relation_aliases = _load_store_list(path, "relation_aliases.json", "aliases")
+                self._concepts = _load_store_list(path, "concept_bank.json", "concepts")
 
     def run(self, inp: BindingInput) -> BindingOutput:
         graph = inp.perceptual_evidence_graph
@@ -236,6 +247,22 @@ class BindingOperator:
             dmf,
         )
 
+        local_graphs = _local_graphs_for_seed(
+            seed=seed,
+            unit_by_id=unit_by_id,
+            confidence=confidence,
+            concepts=self._concepts,
+            relation_aliases=self._relation_aliases,
+            operators=self._operators,
+        )
+        if any(graph.family == "concept" and graph.edges for graph in local_graphs):
+            confidence = max(confidence, 0.72)
+        receipts = [
+            receipt
+            for graph_candidate in local_graphs
+            for receipt in graph_candidate.operator_receipts
+        ]
+
         return CandidateFrame(
             frame_id=seed.seed_id,
             frame_type=seed.frame_type,
@@ -247,6 +274,8 @@ class BindingOperator:
             unresolved_slot_names=sorted(set(unresolved)),
             supporting_trace_ids=sorted(set(supporting)),
             conflicting_trace_ids=sorted(set(conflicting)),
+            local_graphs=local_graphs,
+            operator_receipts=receipts,
         )
 
     def _fallback_frame(
@@ -313,6 +342,362 @@ def _load_affordances(checkpoint: Path) -> dict[str, Any]:
     store.setdefault("patterns", [])
     store.setdefault("region_frame_hints", dict(_REGION_FRAME_HINTS))
     return store
+
+
+def _load_store_list(checkpoint: Path, file_name: str, key: str) -> list[dict[str, Any]]:
+    path = checkpoint / file_name
+    if not path.exists():
+        return []
+    try:
+        store = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    rows = store.get(key) if isinstance(store, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _local_graphs_for_seed(
+    *,
+    seed: FrameSeed,
+    unit_by_id: dict[str, CandidateUnit],
+    confidence: float,
+    concepts: list[dict[str, Any]],
+    relation_aliases: list[dict[str, Any]],
+    operators: list[dict[str, Any]],
+) -> list[LocalGraph]:
+    units = [
+        unit_by_id[unit_id]
+        for unit_id in _ordered_unit_ids(list(seed.unit_ids), unit_by_id)
+        if unit_id in unit_by_id
+    ]
+    if not units:
+        return []
+
+    graph = LocalGraph(
+        graph_id=f"graph_{seed.seed_id}",
+        family="generic",
+        source_refs=[unit.unit_id for unit in units],
+    )
+
+    def add_node(label: str, kind: str, refs: list[str] | None = None, conf: float = 0.6) -> str:
+        key = normalize_cue_key(label) or _slug_frame_id(label)
+        node_id = f"{kind}:{key}"
+        if not any(node.node_id == node_id for node in graph.nodes):
+            graph.nodes.append(
+                GraphNode(
+                    node_id=node_id,
+                    node_kind=kind,
+                    label=label,
+                    source_unit_ids=list(refs or []),
+                    confidence=round(conf, 3),
+                )
+            )
+        return node_id
+
+    for unit in units:
+        add_node(unit.surface, _node_kind_for_unit(unit), [unit.unit_id], unit.confidence or confidence)
+
+    text = " ".join(unit.surface for unit in units)
+    matched_concepts = _matched_concepts(text, concepts)
+    if matched_concepts:
+        graph.family = "concept"
+        for concept in matched_concepts:
+            concept_id = str(concept.get("concept_id") or concept.get("id") or "").strip()
+            if not concept_id:
+                continue
+            concept_node = add_node(
+                concept_id,
+                "concept",
+                conf=_safe_float(concept.get("confidence"), confidence or 0.7),
+            )
+            for rel_index, relation in enumerate(concept.get("relations") or []):
+                if isinstance(relation, (list, tuple)) and len(relation) >= 2:
+                    rel_name = str(relation[0])
+                    target = str(relation[1])
+                    rel_conf = float(relation[2]) if len(relation) > 2 else _safe_float(
+                        concept.get("confidence"), 0.75
+                    )
+                    refs: list[str] = []
+                elif isinstance(relation, dict):
+                    rel_name = str(relation.get("relation") or relation.get("edge_kind") or "")
+                    target = str(relation.get("target") or relation.get("value") or "")
+                    rel_conf = _safe_float(
+                        relation.get("confidence"),
+                        _safe_float(concept.get("confidence"), 0.75),
+                    )
+                    refs = [str(ref) for ref in relation.get("source_refs") or [] if str(ref)]
+                else:
+                    continue
+                if not rel_name or not target:
+                    continue
+                target_node = add_node(target, "value", conf=rel_conf)
+                graph.edges.append(
+                    GraphEdge(
+                        edge_id=(
+                            f"edge_{normalize_cue_key(concept_id)}_"
+                            f"{normalize_cue_key(rel_name)}_{rel_index}"
+                        ),
+                        edge_kind="relation",
+                        source_id=concept_node,
+                        target_id=target_node,
+                        label=normalize_cue_key(rel_name),
+                        confidence=round(rel_conf, 3),
+                        provenance_refs=refs,
+                    )
+                )
+
+    _add_alias_edges(graph, units, relation_aliases, add_node)
+    _apply_operators(graph, operators)
+    return [graph] if graph.nodes or graph.edges else []
+
+
+def _node_kind_for_unit(unit: CandidateUnit) -> str:
+    kind = normalize_cue_key(unit.kind_hint or "")
+    if kind in {"cell", "object", "component"}:
+        return "artifact"
+    if kind in {"verb", "verb_span"} or _is_verb_like(unit):
+        return "event"
+    return "entity"
+
+
+def _matched_concepts(text: str, concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_text = normalize_cue_key(text)
+    matches: list[dict[str, Any]] = []
+    for concept in concepts:
+        terms = [concept.get("concept_id"), concept.get("id"), *(concept.get("terms") or [])]
+        for term in terms:
+            raw = str(term or "").strip()
+            if not raw:
+                continue
+            key = normalize_cue_key(raw)
+            if key and (key in normalized_text or normalized_text in key):
+                matches.append(concept)
+                break
+    return matches
+
+
+def _add_alias_edges(
+    graph: LocalGraph,
+    units: list[CandidateUnit],
+    aliases: list[dict[str, Any]],
+    add_node: Any,
+) -> None:
+    for unit in units:
+        surface = normalize_cue_key(unit.surface)
+        for alias in aliases:
+            pattern = normalize_cue_key(str(alias.get("surface_pattern") or alias.get("surface") or ""))
+            if not pattern or pattern != surface:
+                continue
+            candidates = alias.get("relation_candidates") or []
+            if isinstance(candidates, str):
+                candidates = [candidates]
+            for index, rel in enumerate(candidates):
+                rel_name = normalize_cue_key(str(rel))
+                if not rel_name:
+                    continue
+                source_id = add_node(
+                    unit.surface,
+                    _node_kind_for_unit(unit),
+                    [unit.unit_id],
+                    unit.confidence or 0.6,
+                )
+                relation_node = add_node(
+                    rel_name,
+                    "relation",
+                    [unit.unit_id],
+                    _safe_float(alias.get("confidence"), 0.55),
+                )
+                graph.edges.append(
+                    GraphEdge(
+                        edge_id=f"alias_{unit.unit_id}_{rel_name}_{index}",
+                        edge_kind="relation",
+                        source_id=source_id,
+                        target_id=relation_node,
+                        label=rel_name,
+                        source_unit_ids=[unit.unit_id],
+                        confidence=round(_safe_float(alias.get("confidence"), 0.55), 3),
+                        provenance_refs=[str(alias.get("alias_id") or pattern)],
+                    )
+                )
+
+
+def _apply_operators(graph: LocalGraph, operators: list[dict[str, Any]]) -> None:
+    if not operators or not graph.edges:
+        return
+    for operator in operators:
+        pattern = operator.get("pattern") or []
+        effects = operator.get("effects") or []
+        if not isinstance(pattern, list) or not isinstance(effects, list):
+            continue
+        matches = _match_operator_pattern(graph, pattern)
+        if not matches:
+            continue
+        operator_id = str(operator.get("operator_id") or operator.get("id") or "operator")
+        family = str(operator.get("family") or "")
+        confidence = _safe_float(operator.get("default_confidence"), 0.65)
+        for match_index, (binding, matched_edge_ids) in enumerate(matches[:4]):
+            inferred: list[str] = []
+            for effect_index, effect in enumerate(effects):
+                edge = _edge_from_effect(
+                    graph,
+                    effect,
+                    binding,
+                    operator_id=operator_id,
+                    match_index=match_index,
+                    effect_index=effect_index,
+                    confidence=confidence,
+                )
+                if edge is None or _edge_exists(graph, edge):
+                    continue
+                graph.edges.append(edge)
+                inferred.append(edge.edge_id)
+            if inferred:
+                graph.operator_receipts.append(
+                    OperatorReceipt(
+                        operator_id=operator_id,
+                        family=family,
+                        matched_edge_ids=matched_edge_ids,
+                        inferred_edge_ids=inferred,
+                        confidence=round(confidence, 3),
+                        source="operator_bank",
+                    )
+                )
+
+
+def _match_operator_pattern(graph: LocalGraph, pattern: list[Any]) -> list[tuple[dict[str, str], list[str]]]:
+    rows = [_normalize_pattern_row(row) for row in pattern]
+    if not rows:
+        return []
+    matches: list[tuple[dict[str, str], list[str]]] = []
+
+    def backtrack(index: int, binding: dict[str, str], edge_ids: list[str]) -> None:
+        if index >= len(rows):
+            matches.append((dict(binding), list(edge_ids)))
+            return
+        kind, label, source, target = rows[index]
+        for edge in graph.edges:
+            next_binding = dict(binding)
+            if not _edge_matches(edge, graph, kind, label, source, target, next_binding):
+                continue
+            backtrack(index + 1, next_binding, [*edge_ids, edge.edge_id])
+
+    backtrack(0, {}, [])
+    return matches
+
+
+def _normalize_pattern_row(row: Any) -> tuple[str, str, str, str]:
+    if isinstance(row, dict):
+        return (
+            normalize_cue_key(str(row.get("edge_kind") or row.get("kind") or "relation")),
+            normalize_cue_key(str(row.get("label") or row.get("relation") or "")),
+            str(row.get("source") or "X"),
+            str(row.get("target") or "Y"),
+        )
+    if isinstance(row, (list, tuple)) and len(row) >= 4:
+        return (
+            normalize_cue_key(str(row[0])),
+            normalize_cue_key(str(row[1])),
+            str(row[2]),
+            str(row[3]),
+        )
+    return ("", "", "", "")
+
+
+def _edge_matches(
+    edge: GraphEdge,
+    graph: LocalGraph,
+    kind: str,
+    label: str,
+    source: str,
+    target: str,
+    binding: dict[str, str],
+) -> bool:
+    if kind and kind != "*" and normalize_cue_key(edge.edge_kind) != kind:
+        return False
+    if label and label != "*" and normalize_cue_key(edge.label) != label:
+        return False
+    return _bind_or_compare(source, edge.source_id, graph, binding) and _bind_or_compare(
+        target, edge.target_id, graph, binding
+    )
+
+
+def _bind_or_compare(token: str, node_id: str, graph: LocalGraph, binding: dict[str, str]) -> bool:
+    clean = str(token).strip()
+    if not clean or clean == "*":
+        return True
+    if clean.isupper():
+        previous = binding.get(clean)
+        if previous is None:
+            binding[clean] = node_id
+            return True
+        return previous == node_id
+    wanted = normalize_cue_key(clean)
+    node = next((item for item in graph.nodes if item.node_id == node_id), None)
+    return wanted in {normalize_cue_key(node_id), normalize_cue_key(node.label if node else "")}
+
+
+def _edge_from_effect(
+    graph: LocalGraph,
+    effect: Any,
+    binding: dict[str, str],
+    *,
+    operator_id: str,
+    match_index: int,
+    effect_index: int,
+    confidence: float,
+) -> GraphEdge | None:
+    kind, label, source, target = _normalize_pattern_row(effect)
+    if not kind or not label:
+        return None
+    source_id = _resolve_effect_node(graph, source, binding)
+    target_id = _resolve_effect_node(graph, target, binding)
+    if not source_id or not target_id:
+        return None
+    clean_op = normalize_cue_key(operator_id) or "operator"
+    return GraphEdge(
+        edge_id=f"inferred_{clean_op}_{match_index}_{effect_index}",
+        edge_kind=kind,
+        source_id=source_id,
+        target_id=target_id,
+        label=label,
+        confidence=round(confidence, 3),
+        provenance_refs=[operator_id],
+        inferred=True,
+    )
+
+
+def _resolve_effect_node(graph: LocalGraph, token: str, binding: dict[str, str]) -> str:
+    clean = str(token).strip()
+    if clean.isupper() and clean in binding:
+        return binding[clean]
+    label = clean
+    kind = "value"
+    if ":" in clean:
+        kind, label = clean.split(":", 1)
+        kind = normalize_cue_key(kind) or "value"
+    node_id = f"{kind}:{normalize_cue_key(label)}"
+    if not any(node.node_id == node_id for node in graph.nodes):
+        graph.nodes.append(
+            GraphNode(
+                node_id=node_id,
+                node_kind=kind,
+                label=label,
+                confidence=0.5,
+            )
+        )
+    return node_id
+
+
+def _edge_exists(graph: LocalGraph, candidate: GraphEdge) -> bool:
+    return any(
+        edge.edge_kind == candidate.edge_kind
+        and edge.label == candidate.label
+        and edge.source_id == candidate.source_id
+        and edge.target_id == candidate.target_id
+        for edge in graph.edges
+    )
 
 
 def _collect_seeds(
@@ -392,6 +777,23 @@ def _collect_seeds(
                 seeds.append(extra)
                 seen.add(extra.seed_id)
                 existing_ids.add(extra.seed_id)
+
+    if seeds:
+        all_unit_ids = {unit.unit_id for unit in graph.candidate_units if unit.unit_id}
+        covered = {unit_id for seed in seeds for unit_id in seed.unit_ids}
+        if all_unit_ids and all_unit_ids - covered:
+            seed_id = "frame_all_evidence"
+            if seed_id not in seen:
+                seeds.append(
+                    FrameSeed(
+                        seed_id=seed_id,
+                        frame_type="event",
+                        unit_ids=all_unit_ids,
+                        structural_tags=["all_evidence_fallback"],
+                        source="coverage_gap",
+                    )
+                )
+                seen.add(seed_id)
 
     if not seeds and prior_frames:
         seeds.extend(_seeds_from_prior_frames(prior_frames))

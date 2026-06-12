@@ -23,6 +23,7 @@ from lucid.training.corpus.adapters import episode_to_cue_encoder_input, episode
 from lucid.training.corpus.engine import AmbiguityKnob, rng_for_seed
 from lucid.training.corpus.output import write_episodes
 from lucid.training.corpus.recipes import bank_destination
+from lucid.training.quantum_articles import train_quantum_articles
 
 
 def _bank_binding_input() -> BindingInput:
@@ -267,6 +268,43 @@ def test_binding_marks_competing_cue_routes_unresolved() -> None:
         for slot_id, refs in frame.slot_evidence_refs.items()
         if slot_id in frame.role_assignments
     }
+
+
+def test_binding_loads_concept_graph_operators_from_quantum_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "quantum_checkpoint"
+    train_quantum_articles(checkpoint)
+    graph = perceive(
+        PerceptionInput(raw_payload="what is a qubit", modality=Modality.TEXT),
+        config=PerceptionConfig(backend="rule"),
+    )
+
+    out = run_binding(
+        BindingInput(
+            dmf_output=DmfOutput(),
+            perceptual_evidence_graph=graph,
+            cue_cloud=CueCloud(),
+        ),
+        config=BindingConfig(checkpoint=checkpoint),
+    )
+
+    concept_frames = [
+        frame
+        for frame in out.candidate_frames
+        if any(local_graph.family == "concept" for local_graph in frame.local_graphs)
+    ]
+    assert concept_frames
+    edge_labels = {
+        edge.label
+        for frame in concept_frames
+        for local_graph in frame.local_graphs
+        for edge in local_graph.edges
+    }
+    assert {"type_of", "property", "definition_support"}.issubset(edge_labels)
+    assert any(
+        receipt.operator_id == "concept_relations_support_definition"
+        for frame in concept_frames
+        for receipt in frame.operator_receipts
+    )
 
 
 def test_cli_bind_smoke(capsys) -> None:

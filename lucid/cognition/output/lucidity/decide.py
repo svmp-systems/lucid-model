@@ -40,6 +40,22 @@ def _all_named_checks_pass(checks: LucidityCheckResults, *, skip_projection: boo
     return all(item is not None and item.passed for item in items)
 
 
+def _has_supported_local_graph(inp: LucidityInput) -> bool:
+    for frame in inp.binding_output.candidate_frames:
+        for graph in frame.local_graphs:
+            if graph.family != "concept":
+                continue
+            if any(
+                edge.edge_kind == "relation"
+                and edge.confidence >= 0.5
+                and bool(edge.provenance_refs)
+                and not edge.edge_id.startswith("alias_")
+                for edge in graph.edges
+            ):
+                return True
+    return False
+
+
 def decoder_policy_for(
     decision: LucidityDecision,
     *,
@@ -244,6 +260,31 @@ def decide(
                 allow_new_frames=True,
                 extra={"allow_provisional_basins": True},
             ),
+            audit_notes=notes,
+        )
+
+    if (
+        _has_supported_local_graph(inp)
+        and coverage is not None
+        and coverage.passed
+        and checks.coherence_check is not None
+        and checks.coherence_check.passed
+        and binding is not None
+        and binding.passed
+        and scope is not None
+        and scope.passed
+        and risk is not None
+        and risk.passed
+    ):
+        notes.append("lucidity:commit_local_graph")
+        return LucidityOutput(
+            decision=LucidityDecision.COMMIT,
+            decoder_policy=decoder_policy_for(
+                LucidityDecision.COMMIT,
+                task_intent=inp.task_intent,
+                checks=checks,
+            ),
+            committed_state=build_committed_state(inp),
             audit_notes=notes,
         )
 

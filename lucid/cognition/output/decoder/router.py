@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lucid.cognition.output.decoder.canvas import build_canvas, realize_canvas
 from lucid.cognition.output.decoder.renderers.grid import render_grid
 from lucid.cognition.output.decoder.renderers.hold import render_hold
 from lucid.cognition.output.decoder.renderers.refusal import render_refusal
@@ -33,6 +34,12 @@ def route_render(packet: LucidityRenderPacket, policy: DecoderPolicy) -> Decoder
 
 
 def _render_semantic(packet: LucidityRenderPacket) -> DecoderOutput:
+    canvas = build_canvas(packet)
+    if canvas.lines:
+        out = realize_canvas(canvas, packet.render_constraints)
+        out.audit_notes.append("decoder:route=canvas")
+        return out
+
     graph = build_semantic_graph(packet)
     discourse = plan_discourse(graph, packet.render_constraints)
     program = plan_realization(discourse)

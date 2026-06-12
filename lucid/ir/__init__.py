@@ -19,7 +19,7 @@ from lucid.ir import (
 )
 
 from lucid.ir.basins import BasinInput, BasinOutput, CandidateBasinState
-from lucid.ir.binding import BindingInput, BindingOutput, CandidateFrame
+from lucid.ir.binding import BindingInput, BindingOutput, CandidateFrame, GraphEdge, GraphNode, LocalGraph, OperatorReceipt
 from lucid.ir.common import (
     AuditEnvelope,
     CommitShape,
@@ -81,6 +81,8 @@ __all__ = [
     "FrameSlotTarget",
     "FrameTarget",
     "GoldLabels",
+    "GraphEdge",
+    "GraphNode",
     "InterferenceInput",
     "InterferenceLearningPatch",
     "InterferenceLearningResult",
@@ -88,9 +90,11 @@ __all__ = [
     "LucidityDecision",
     "LucidityInput",
     "LucidityOutput",
+    "LocalGraph",
     "Modality",
     "PerceptionInput",
     "PerceptualEvidenceGraph",
+    "OperatorReceipt",
     "PipelineRun",
     "ProjectorInput",
     "ProjectorOutput",

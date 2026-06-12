@@ -48,10 +48,12 @@ class ScalingPoint:
     gpu_seconds: float = 0.0
     active_trace_count: int | None = None
     active_basin_count: int | None = None
+    active_operator_count: int | None = None
     retrieval_budget: int | None = None
     config_hash: str = ""
     git_sha: str = ""
     provenance: dict[str, Any] = field(default_factory=dict)
+    heat_tier_distribution: dict[str, int] = field(default_factory=dict)
 
 
 def _default_scaling_data_dir() -> Path:
@@ -262,6 +264,15 @@ def point_from_pipeline_run(
         d = run.lucidity_output.decision
         lucidity_decision = d.value if hasattr(d, "value") else str(d)
 
+    heat_tiers: dict[str, int] = {}
+    if run.dmf_output is not None:
+        for trace in run.dmf_output.active_traces:
+            tier = str(getattr(trace, "heat_tier", "") or "unknown")
+            heat_tiers[tier] = heat_tiers.get(tier, 0) + 1
+    operator_count = 0
+    if run.binding_output is not None:
+        operator_count = sum(len(frame.operator_receipts) for frame in run.binding_output.candidate_frames)
+
     return ScalingPoint(
         point_id=str(uuid4()),
         timestamp_utc=utc_now_iso(),
@@ -287,9 +298,11 @@ def point_from_pipeline_run(
         wall_time_ms=float(run.cost_metrics.wall_time_ms),
         active_trace_count=len(run.dmf_output.active_traces) if run.dmf_output else None,
         active_basin_count=len(run.basin_output.candidate_basin_states) if run.basin_output else None,
+        active_operator_count=operator_count if run.binding_output else None,
         retrieval_budget=budget,
         config_hash=cfg_hash,
         git_sha=try_git_sha(),
+        heat_tier_distribution=heat_tiers,
         provenance={"source": "orchestrator_runner"},
     )
 

@@ -107,6 +107,65 @@ def _unit_surfaces(inp: LucidityInput) -> dict[str, str]:
     }
 
 
+def _graph_node_label(frame: CandidateFrame, node_id: str) -> str:
+    for graph in frame.local_graphs:
+        for node in graph.nodes:
+            if node.node_id == node_id:
+                return node.label or node.node_id
+    return node_id
+
+
+def _graph_relation_render_units(inp: LucidityInput) -> list[RenderUnit]:
+    units: list[RenderUnit] = []
+    index = 0
+    for frame in inp.binding_output.candidate_frames:
+        for graph in frame.local_graphs:
+            for edge in graph.edges:
+                if edge.edge_kind != "relation" or not edge.label:
+                    continue
+                if edge.edge_id.startswith("alias_"):
+                    continue
+                subject = _graph_node_label(frame, edge.source_id)
+                target = _graph_node_label(frame, edge.target_id)
+                if not subject or not target:
+                    continue
+                refs = [
+                    SourceRef(ref_type="frame", ref_id=frame.frame_id, role="supports"),
+                    *[
+                        SourceRef(ref_type="source", ref_id=ref, role="supports")
+                        for ref in edge.provenance_refs
+                        if ref
+                    ],
+                    *[
+                        SourceRef(ref_type="evidence", ref_id=ref, role="supports")
+                        for ref in edge.source_unit_ids
+                        if ref
+                    ],
+                ]
+                units.append(
+                    RenderUnit(
+                        unit_id=f"graph-claim-{index}",
+                        unit_type="claim",
+                        scope_frame_id=frame.frame_id,
+                        text_intent="answer",
+                        payload={
+                            "subject": subject,
+                            "relation": edge.label,
+                            "target": target,
+                            "summary": f"{subject} {edge.label} {target}",
+                            "graph_id": graph.graph_id,
+                            "edge_id": edge.edge_id,
+                            "inferred": edge.inferred,
+                        },
+                        confidence=edge.confidence,
+                        required=True,
+                        source_refs=refs,
+                    )
+                )
+                index += 1
+    return units
+
+
 def _frame_render_unit(
     *,
     index: int,
@@ -186,6 +245,7 @@ def _committed_render_units(
     units: list[RenderUnit] = []
     frame_by_id = {frame.frame_id: frame for frame in inp.binding_output.candidate_frames}
     scoped = _frame_for_scope(inp.binding_output.candidate_frames, inp.context_op_output.context_frames)
+    graph_units = _graph_relation_render_units(inp)
 
     if primary_basin_id:
         state = next(
@@ -206,12 +266,16 @@ def _committed_render_units(
                     "scope_frame_ids": list(state.scope_frame_ids) if state is not None else [],
                 },
                 confidence=state.energy if state is not None else 0.0,
-                required=not artifact and not frame_commits,
+                required=not artifact and not frame_commits and not graph_units,
                 source_refs=[SourceRef(ref_type="basin", ref_id=primary_basin_id, role="supports")],
             )
         )
 
+    units.extend(graph_units)
+
     for index, commit in enumerate(frame_commits):
+        if graph_units:
+            continue
         frame = frame_by_id.get(commit.context_frame_id) or scoped.get(commit.context_frame_id)
         if frame is not None:
             units.append(
