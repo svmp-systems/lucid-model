@@ -7,6 +7,7 @@ from lucid.cognition.output.lucidity.commit import (
     preserved_hypotheses_from_basins,
     projector_targets,
 )
+from lucid.cognition.output.lucidity.chat_speech import try_social_speech_decision
 from lucid.cognition.output.lucidity.config import (
     LucidityConfig,
     normalize_pass_kind,
@@ -56,6 +57,60 @@ def _has_supported_local_graph(inp: LucidityInput) -> bool:
     return False
 
 
+def _top_source_backed_relation_basin_ready(
+    inp: LucidityInput,
+    checks: LucidityCheckResults,
+) -> bool:
+    task = normalize_task_intent(inp.task_intent)
+    if task not in {"answer", "chat"}:
+        return False
+
+    summary = inp.basin_output.competition_summary
+    if not summary.top_basin_id:
+        return False
+
+    required_checks = [
+        checks.margin_check,
+        checks.coverage_check,
+        checks.scope_check,
+        checks.contradiction_check,
+        checks.maturity_check,
+        checks.risk_check,
+    ]
+    if any(item is None or not item.passed for item in required_checks):
+        return False
+
+    top = next(
+        (
+            state
+            for state in inp.basin_output.candidate_basin_states
+            if state.basin_id == summary.top_basin_id
+        ),
+        None,
+    )
+    if top is None or top.energy <= 0.0:
+        return False
+    if top.coherence_score < 0.7:
+        return False
+
+    payload = top.quantized_payload if isinstance(top.quantized_payload, dict) else {}
+    relations = payload.get("relations")
+    if not isinstance(relations, list) or not relations:
+        return False
+
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        rel_name = str(relation.get("relation") or "").strip()
+        target = str(relation.get("target") or "").strip()
+        source_refs = relation.get("source_refs") or top.source_refs
+        has_source_ref = any(str(ref).strip() for ref in source_refs)
+        confidence = float(relation.get("confidence", top.energy) or 0.0)
+        if rel_name and target and has_source_ref and confidence >= 0.5:
+            return True
+    return False
+
+
 def decoder_policy_for(
     decision: LucidityDecision,
     *,
@@ -102,6 +157,11 @@ def decide(
     task = normalize_task_intent(inp.task_intent)
     pass_kind = normalize_pass_kind(inp.pass_kind)
     notes: list[str] = [f"lucidity:task={task}", f"lucidity:pass={pass_kind}"]
+
+    social = try_social_speech_decision(inp)
+    if social is not None:
+        social.audit_notes = [*notes, *social.audit_notes]
+        return social
 
     if inp.iteration_count >= config.max_iterations:
         notes.append("lucidity:iteration_cap")
@@ -231,6 +291,19 @@ def decide(
                 checks=checks,
             ),
             preserved_hypotheses=preserved_hypotheses_from_basins(inp),
+            audit_notes=notes,
+        )
+
+    if _top_source_backed_relation_basin_ready(inp, checks):
+        notes.append("lucidity:commit_source_backed_basin")
+        return LucidityOutput(
+            decision=LucidityDecision.COMMIT,
+            decoder_policy=decoder_policy_for(
+                LucidityDecision.COMMIT,
+                task_intent=inp.task_intent,
+                checks=checks,
+            ),
+            committed_state=build_committed_state(inp),
             audit_notes=notes,
         )
 

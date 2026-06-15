@@ -28,6 +28,8 @@ from lucid.ir.perception import (
     ReferenceHint,
     UncertaintyFlag,
 )
+from lucid.runtime.paths import resolve_checkpoint
+from lucid.training.checkpoint.slots import resolve_checkpoint_ref
 
 _TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 _STOP_CUE_KEYS = frozenset(
@@ -82,6 +84,21 @@ _STRUCTURAL_CUE_HINTS: dict[str, str] = {
     "with": "association_marker",
     "you": "deictic_addressee",
 }
+_CONTEXTUAL_SUFFIX_TERMS = frozenset(
+    {
+        "algorithm",
+        "bit",
+        "circuit",
+        "computer",
+        "gate",
+        "hardware",
+        "mechanic",
+        "particle",
+        "processor",
+        "state",
+        "system",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +130,15 @@ def normalize_cue_key(value: str) -> str:
     return clean
 
 
+def _singular_cue_key(value: str) -> str:
+    key = normalize_cue_key(value)
+    if key.endswith("ies") and len(key) > 4:
+        return key[:-3] + "y"
+    if key.endswith("s") and not key.endswith("ss") and len(key) > 3:
+        return key[:-1]
+    return key
+
+
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, float(value)))
 
@@ -126,8 +152,12 @@ def _base_weight(confidence: float = 0.0, salience: float = 0.0, fallback: float
 def _load_cue_map(checkpoint: str | Path | None) -> dict[str, Any]:
     if not checkpoint:
         return {}
-    root = Path(checkpoint)
-    path = root / "cue_encoder_map.json" if root.is_dir() else root
+    raw_path = Path(checkpoint)
+    if raw_path.is_file():
+        path = raw_path
+    else:
+        root = resolve_checkpoint(resolve_checkpoint_ref(checkpoint))
+        path = root / "cue_encoder_map.json"
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
@@ -422,6 +452,7 @@ def evidence_features(graph: PerceptualEvidenceGraph) -> list[EvidenceFeature]:
     for unit in graph.candidate_units:
         force_keep_alive = _target_has_uncertainty(graph.uncertainty_flags, unit.unit_id)
         features.extend(_surface_features(unit, force_keep_alive=force_keep_alive))
+    features.extend(_compound_unit_features(graph.candidate_units))
     for marker in graph.candidate_markers:
         features.extend(_marker_features(marker))
     for hint in graph.reference_hints:
@@ -457,6 +488,44 @@ def evidence_features(graph: PerceptualEvidenceGraph) -> list[EvidenceFeature]:
             )
         )
     return features
+
+
+def _compound_unit_features(units: list[CandidateUnit]) -> list[EvidenceFeature]:
+    ordered = sorted(units, key=lambda unit: (_unit_position(unit), unit.unit_id))
+    features: list[EvidenceFeature] = []
+    for width in (2, 3):
+        for index in range(0, max(0, len(ordered) - width + 1)):
+            group = ordered[index : index + width]
+            keys = [normalize_cue_key(unit.surface) for unit in group]
+            if any(not key for key in keys):
+                continue
+            if any(key in _STOP_CUE_KEYS for key in keys):
+                continue
+            phrase_key = "_".join(keys)
+            if len(phrase_key) < 4:
+                continue
+            base = max(_base_weight(unit.confidence, unit.salience, fallback=0.62) for unit in group)
+            refs = tuple(unit.unit_id for unit in group if unit.unit_id)
+            features.append(
+                EvidenceFeature(
+                    feature_key=f"phrase:{phrase_key}",
+                    cue_key=phrase_key,
+                    weight=max(0.3, base * 0.96),
+                    evidence_refs=refs,
+                    keep_alive=any(
+                        _target_has_uncertainty([], unit.unit_id) for unit in group
+                    ),
+                )
+            )
+    return features
+
+
+def _unit_position(unit: CandidateUnit) -> tuple[int, str]:
+    raw = str(unit.position_or_time or "")
+    try:
+        return (int(raw), raw)
+    except ValueError:
+        return (10_000, raw)
 
 
 def _weak_structure_hints(graph: PerceptualEvidenceGraph) -> list[str]:
@@ -763,6 +832,8 @@ def encode_cues(
     if inp.task_intent_hint:
         key = f"task:{normalize_cue_key(inp.task_intent_hint)}"
         soft_priors[key] = 0.12
+    for key, weight in _session_context_priors(inp.upstream_state, primitive).items():
+        soft_priors[key] = max(soft_priors.get(key, 0.0), weight)
 
     cloud = CueCloud(
         primitive_trace_activations=primitive_requests,
@@ -785,3 +856,63 @@ def encode_cues(
         "relational_candidate_count": len(relation),
     }
     return cloud
+
+
+def _session_context_priors(
+    upstream_state: dict[str, Any],
+    primitive: dict[str, dict[str, Any]],
+) -> dict[str, float]:
+    session_context = upstream_state.get("session_context")
+    if not isinstance(session_context, dict):
+        return {}
+
+    current_terms = {
+        _singular_cue_key(key)
+        for key in primitive
+        if _singular_cue_key(key) in _CONTEXTUAL_SUFFIX_TERMS
+    }
+    if not current_terms:
+        return {}
+
+    recent_parts: list[str] = []
+    for turn in session_context.get("recent_turns") or []:
+        if not isinstance(turn, dict):
+            continue
+        recent_parts.append(str(turn.get("user_input") or ""))
+        recent_parts.append(str(turn.get("assistant_output") or ""))
+    for item in session_context.get("active_memories") or []:
+        if isinstance(item, dict):
+            recent_parts.append(str(item.get("key") or ""))
+            recent_parts.append(str(item.get("value") or ""))
+    recent_text = " ".join(part for part in recent_parts if part).lower()
+    if not recent_text:
+        return {}
+
+    priors: dict[str, float] = {}
+    context_keys = _context_topic_keys(recent_text)
+    for topic_key in context_keys:
+        suffix = _singular_cue_key(topic_key.rsplit("_", 1)[-1])
+        if suffix in current_terms:
+            priors[topic_key] = max(priors.get(topic_key, 0.0), 0.38)
+
+    context_tokens = set(normalize_cue_key(recent_text).split("_"))
+    if "quantum" in context_tokens:
+        for term in current_terms:
+            priors[f"quantum_{term}"] = max(priors.get(f"quantum_{term}", 0.0), 0.32)
+    return priors
+
+
+def _context_topic_keys(text: str) -> set[str]:
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if token and token not in _STOP_CUE_KEYS
+    ]
+    keys: set[str] = set()
+    for index, token in enumerate(tokens[:-1]):
+        if token != "quantum":
+            continue
+        suffix = _singular_cue_key(tokens[index + 1])
+        if suffix in _CONTEXTUAL_SUFFIX_TERMS:
+            keys.add(f"quantum_{suffix}")
+    return keys

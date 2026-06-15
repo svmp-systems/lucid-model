@@ -58,12 +58,31 @@ def _render_bullet(bullet: ComposeBullet, *, packet: LucidityRenderPacket) -> tu
     if "summary" in payload:
         return f"{humanize(payload['summary'])}.", refs
 
+    if payload.get("speech_kind") and payload.get("summary"):
+        return f"{humanize(payload['summary'])}.", refs
+
     if "subject_ref" in payload and "predicate_ref" in payload:
         subj = payload.get("subject_ref", "")
         pred = payload.get("predicate_ref", "")
         return f"The committed reading links {subj} to {pred}.", refs
 
+    if "subject" in payload and "relation" in payload and "target" in payload:
+        from lucid.cognition.output.decoder.fluent import realize_relation_group
+
+        target = payload["target"]
+        targets = target if isinstance(target, list) else [target]
+        text = realize_relation_group(
+            str(payload.get("subject") or ""),
+            str(payload.get("relation") or ""),
+            [str(item) for item in targets if str(item).strip()],
+        )
+        if text:
+            return text, refs
+
     if payload:
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            return f"{humanize(summary)}.", refs
         pairs = ", ".join(f"{key}={humanize(val)}" for key, val in payload.items())
         return f"Approved: {pairs}.", refs
 

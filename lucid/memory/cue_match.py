@@ -27,6 +27,22 @@ _CONTENT_STOPWORDS = frozenset(
         "your",
     }
 )
+_CONTEXTUAL_SINGLETONS = frozenset(
+    {
+        "algorithm",
+        "bit",
+        "circuit",
+        "computer",
+        "gate",
+        "hardware",
+        "mechanic",
+        "particle",
+        "processor",
+        "quantum",
+        "state",
+        "system",
+    }
+)
 
 
 def _tokens(key: str) -> set[str]:
@@ -41,16 +57,25 @@ def best_affinity_for_cue(cue_key: str, cue_affinities: dict[str, float]) -> flo
     direct = float(cue_affinities.get(cue_key, 0.0))
     best = direct
     cue_tokens = _tokens(cue_key)
+    block_contextual_singleton = len(cue_tokens) == 1 and next(iter(cue_tokens), "") in _CONTEXTUAL_SINGLETONS
     for aff_key, aff_val in cue_affinities.items():
         if aff_val <= 0:
             continue
         if cue_key == aff_key:
             best = max(best, aff_val)
             continue
-        if cue_key in aff_key or aff_key in cue_key:
-            best = max(best, aff_val * 0.95)
+        if block_contextual_singleton and len(_tokens(aff_key)) > 1:
             continue
-        shared = cue_tokens & _tokens(aff_key)
+        aff_tokens = _tokens(aff_key)
+        if cue_key in aff_key or aff_key in cue_key:
+            if len(cue_tokens) == 1 and len(aff_tokens) > 1:
+                best = max(best, aff_val * 0.35)
+            elif len(aff_tokens) == 1 and len(cue_tokens) > 1:
+                best = max(best, aff_val * 0.65)
+            else:
+                best = max(best, aff_val * 0.95)
+            continue
+        shared = cue_tokens & aff_tokens
         if shared:
             best = max(best, aff_val * 0.9)
     return best

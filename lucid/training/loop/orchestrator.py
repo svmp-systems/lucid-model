@@ -22,6 +22,12 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from lucid.training.source_policy import (
+    training_episode_block_reason,
+    training_episode_policy_dict,
+    training_episode_promotion_eligible,
+)
+
 
 class PipelineStage(Protocol):
     """Minimal contract for injected cognitive stages."""
@@ -1390,6 +1396,19 @@ class TrainingOrchestrator:
             self._run_history.append((run_log, validation))
             self._last_run_log = run_log
             self._last_patch = None
+
+            if not training_episode_promotion_eligible(episode):
+                governor_decision = TrainingGovernorDecision(
+                    action="DEFER",
+                    reason=training_episode_block_reason(episode),
+                    governor_input=self.governor._input_from_run(run_log, validation, []),
+                    audit_log={"training_policy": training_episode_policy_dict(episode)},
+                )
+                self.governor.record_decision(governor_decision, validation)
+                self._governor_action_history.append(governor_decision.action)
+                self._update_history.append(0)
+                action = "governor_defer"
+                return
 
             governor_decision = self.governor.observe(run_log, validation)
             if governor_decision.action in {"NO_UPDATE", "DEFER"}:

@@ -10,13 +10,14 @@ from lucid.ir.context_op import InterferenceGate
 from lucid.ir.interference import LearnedInterferenceLink
 from lucid.ir.lucidity import LucidityRenderPacket
 from lucid.runtime.paths import resolve_train_path
+from lucid.training.checkpoint.slots import resolve_checkpoint_ref
 from lucid.training.checkpoint.store import STORE_FILES
 
 
 def resolve_checkpoint(path: str | Path | None) -> Path | None:
     if not path or not str(path).strip():
         return None
-    root = resolve_train_path(str(path))
+    root = resolve_train_path(resolve_checkpoint_ref(path))
     manifest = root / "manifest.json"
     return root if manifest.exists() else None
 

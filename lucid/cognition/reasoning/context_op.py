@@ -33,6 +33,8 @@ from lucid.ir.context_op import (
 )
 from lucid.ir.dmf import ActiveTrace
 from lucid.ir.perception import CandidateRegion, PerceptualEvidenceGraph
+from lucid.runtime.paths import resolve_checkpoint
+from lucid.training.checkpoint.slots import resolve_checkpoint_ref
 from lucid.training.checkpoint.store import STORE_FILES
 
 
@@ -612,7 +614,8 @@ def _gate_reason(context: ContextFrame, allowed: set[str], blocked: set[str]) ->
 def _load_gate_patterns(checkpoint: str | Path | None) -> list[dict[str, Any]]:
     if not checkpoint:
         return []
-    path = Path(checkpoint) / STORE_FILES["context_policy"]
+    root = resolve_checkpoint(resolve_checkpoint_ref(checkpoint))
+    path = root / STORE_FILES["context_policy"]
     if not path.exists():
         return []
     payload = json.loads(path.read_text(encoding="utf-8"))

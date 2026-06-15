@@ -1,4 +1,4 @@
-"""Phase-1 generator gold must supervise all module trainers."""
+"""Phase-1 generator episodes must carry full validation labels."""
 
 from __future__ import annotations
 

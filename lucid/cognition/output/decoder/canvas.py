@@ -1,10 +1,12 @@
-"""Minimal decoder path: approved packet -> rough canvas -> faithful surface."""
+"""Minimal decoder path: approved packet -> fluent lines -> faithful surface."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from lucid.cognition.output.decoder.faithfulness import collect_cited_refs
+from lucid.cognition.output.decoder.fluent import compose_fluent_lines
 from lucid.cognition.output.decoder.phrases import humanize
 from lucid.ir.expression import DecoderOutput, SentenceRef
 from lucid.ir.lucidity import LucidityRenderPacket, RenderConstraints, SourceRef
@@ -33,72 +35,20 @@ def _sentence(text: str) -> str:
     return cleaned if cleaned.endswith((".", "!", "?")) else cleaned + "."
 
 
-def _relation_sentence(payload: dict) -> str:
-    subject = humanize(payload.get("subject", "")).strip()
-    relation = str(payload.get("relation") or "").strip().lower()
-    target = humanize(payload.get("target", "")).strip()
-    if not subject or not relation or not target:
-        return ""
-    if relation in {"type_of", "is_a", "kind_of"}:
-        return _sentence(f"{subject} is {target}")
-    if relation in {"property", "has_property"}:
-        if target.lower().startswith("can "):
-            return _sentence(f"{subject} {target}")
-        return _sentence(f"{subject} has {target}")
-    if relation in {"can", "capability"}:
-        return _sentence(f"{subject} can {target}")
-    if relation in {"challenge", "limitation"}:
-        return _sentence(f"{subject} is limited by {target}")
-    if relation in {"uses", "use"}:
-        return _sentence(f"{subject} uses {target}")
-    if relation in {"enables", "supports"}:
-        return _sentence(f"{subject} supports {target}")
-    return _sentence(f"{subject} {humanize(relation)} {target}")
-
-
-def _line_from_payload(payload: dict) -> str:
-    relation = _relation_sentence(payload)
-    if relation:
-        return relation
-    if "bank_sense" in payload:
-        sense = humanize(payload["bank_sense"])
-        scope = str(payload.get("scope_frame_id") or "").strip()
-        if scope:
-            return _sentence(f"In scope {scope}, bank is being used in the {sense} sense")
-        return _sentence(f"Here, bank is being used in the {sense} sense")
-    if "summary" in payload:
-        unresolved = payload.get("unresolved_slots") or []
-        if isinstance(unresolved, list) and unresolved:
-            return _sentence(f"{humanize(payload['summary'])} is not fully settled")
-        return _sentence(humanize(payload["summary"]))
-    if "refusal_reason" in payload:
-        return _sentence(str(payload["refusal_reason"]))
-    if "action_type" in payload:
-        action = humanize(payload.get("action_type", "approved action"))
-        target = humanize(payload.get("target_ref", "")).strip()
-        return _sentence(
-            f"The approved action is {action} for {target}"
-            if target
-            else f"The approved action is {action}"
-        )
-    return ""
+def _split_sentences(text: str) -> list[str]:
+    return [chunk.strip() for chunk in re.split(r"(?<=[.!?])\s+", text.strip()) if chunk.strip()]
 
 
 def build_canvas(packet: LucidityRenderPacket) -> RenderCanvas:
     canvas = RenderCanvas(packet_id=packet.packet_id, render_mode=packet.render_mode)
-    for unit in packet.approved_units:
-        if unit.unit_type == "artifact":
-            continue
-        text = _line_from_payload(dict(unit.payload))
-        if not text:
-            continue
+    for index, line in enumerate(compose_fluent_lines(packet.approved_units)):
         canvas.lines.append(
             CanvasLine(
-                line_id=unit.unit_id,
-                text=text,
-                unit_ids=[unit.unit_id],
-                source_refs=list(unit.source_refs),
-                required=unit.required,
+                line_id=line.unit_ids[0] if line.unit_ids else f"fluent-{index}",
+                text=line.text,
+                unit_ids=list(line.unit_ids),
+                source_refs=list(line.source_refs),
+                required=line.required,
             )
         )
 
@@ -144,18 +94,24 @@ def realize_canvas(canvas: RenderCanvas, constraints: RenderConstraints) -> Deco
 
     sentences: list[str] = []
     sentence_refs: list[SentenceRef] = []
-    for index, line in enumerate(lines):
-        text = _sentence(line.text)
-        if not text:
+    sentence_index = 0
+    for line in lines:
+        chunks = _split_sentences(_sentence(line.text))
+        if not chunks:
             continue
-        sentences.append(text)
-        sentence_refs.append(
-            SentenceRef(
-                sentence_id=f"s{index}",
-                source_refs=list(line.source_refs),
-                unit_ids=list(line.unit_ids),
+        for chunk in chunks:
+            text = _sentence(chunk)
+            if not text:
+                continue
+            sentences.append(text)
+            sentence_refs.append(
+                SentenceRef(
+                    sentence_id=f"s{sentence_index}",
+                    source_refs=list(line.source_refs),
+                    unit_ids=list(line.unit_ids),
+                )
             )
-        )
+            sentence_index += 1
     surface = " ".join(sentences).strip()
     if not surface:
         surface = "No approved text content was available to render."
@@ -173,5 +129,5 @@ def realize_canvas(canvas: RenderCanvas, constraints: RenderConstraints) -> Deco
                 for line in lines
             ]
         },
-        audit_notes=["decoder:canvas_builder", "decoder:tiny_denoising_realizer"],
+        audit_notes=["decoder:canvas_builder", "decoder:fluent_realizer"],
     )

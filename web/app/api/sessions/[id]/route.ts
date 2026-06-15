@@ -21,6 +21,7 @@ export async function GET(request: Request, context: RouteContext) {
         id: session.id,
         title: session.title,
         checkpointVersion: session.checkpointVersion,
+        updatedAt: session.updatedAt,
         messages: session.messages
       }
     });

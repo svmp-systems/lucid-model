@@ -19,7 +19,7 @@ from lucid.training.corpus.engine import (
     sample_knob,
     check_batch,
 )
-from lucid.training.corpus.output import build_phase1_pack, read_episodes, write_episodes
+from lucid.training.corpus.output import build_general_language_pack, build_phase1_pack, read_episodes, write_episodes
 
 
 def cmd_make(args: argparse.Namespace) -> int:
@@ -55,13 +55,18 @@ def cmd_make(args: argparse.Namespace) -> int:
 
 
 def cmd_pack(args: argparse.Namespace) -> int:
-    if args.name != "phase1":
-        print(f"unknown pack {args.name!r}", file=sys.stderr)
-        return 1
-    out = args.out or "data/generated/phase1"
-    episodes = build_phase1_pack(out, seed=args.seed)
-    print(f"phase1: {len(episodes)} episodes -> {out}")
-    return 0
+    if args.name == "phase1":
+        out = args.out or "data/generated/phase1"
+        episodes = build_phase1_pack(out, seed=args.seed)
+        print(f"phase1: {len(episodes)} episodes -> {out}")
+        return 0
+    if args.name == "general-language":
+        out = args.out or "data/generated/general_language"
+        episodes = build_general_language_pack(out, seed=args.seed)
+        print(f"general-language: {len(episodes)} episodes -> {out}")
+        return 0
+    print(f"unknown pack {args.name!r}", file=sys.stderr)
+    return 1
 
 
 def cmd_check(args: argparse.Namespace) -> int:

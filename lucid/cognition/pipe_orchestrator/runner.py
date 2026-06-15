@@ -298,6 +298,9 @@ class OrchestratorRunner:
             upstream_state: dict[str, Any] = {}
             if prev_dmf_coverage is not None:
                 upstream_state["dmf_coverage_score"] = prev_dmf_coverage
+            session_context = run.context.extra.get("session_context")
+            if isinstance(session_context, dict):
+                upstream_state["session_context"] = session_context
 
             run.cue_encoder_input = CueEncoderInput(
                 perceptual_evidence_graph=run.evidence_graph,

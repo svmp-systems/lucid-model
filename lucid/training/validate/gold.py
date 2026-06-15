@@ -18,6 +18,7 @@ from lucid.training.checkpoint.store import checkpoint_summary, load_checkpoint
 from lucid.runtime.paths import DEFAULT_AUDIT_VALIDATION
 from lucid.training.corpus.output import read_episodes
 from lucid.training.loop.orchestrator import RunLog, TrainingEpisode, ValidationResult
+from lucid.training.source_policy import policy_metadata, training_source_policy
 
 
 @dataclass(slots=True)
@@ -271,9 +272,10 @@ def validate_episode_pack(
     return payload
 
 
-def to_training_episode(episode: Episode) -> TrainingEpisode:
+def to_training_episode(episode: Episode, *, allow_generator_gold: bool = False) -> TrainingEpisode:
     task = episode.task_intent.value if hasattr(episode.task_intent, "value") else str(episode.task_intent)
     modality = episode.modality.value if hasattr(episode.modality, "value") else str(episode.modality)
+    policy = training_source_policy(episode, allow_generator_gold=allow_generator_gold)
     return TrainingEpisode(
         episode_id=episode.episode_id,
         raw_input=episode.raw_input,
@@ -282,10 +284,11 @@ def to_training_episode(episode: Episode) -> TrainingEpisode:
         context={},
         constraints={},
         expected_output=episode.gold.expected_answer,
-        validator_type="gold_episode",
+        validator_type=policy.validator_type,
         metadata={
             "template_id": episode.template_id,
             "episode_json": to_dict(episode),
+            **policy_metadata(policy),
         },
     )
 

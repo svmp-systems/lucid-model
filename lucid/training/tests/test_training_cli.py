@@ -42,6 +42,7 @@ def test_dmf_training_persists_checkpoint_and_audit(tmp_path: Path):
             str(audit_dir),
             "--steps",
             "1",
+            "--allow-generator-gold",
         ]
     )
 
@@ -105,6 +106,7 @@ def test_each_module_training_command_writes_audit(module_name: str, tmp_path: P
             str(audit_dir),
             "--steps",
             "3",
+            "--allow-generator-gold",
         ]
     )
 
@@ -133,6 +135,7 @@ def test_global_training_uses_governor_and_promotes_responsible_modules(tmp_path
             str(audit_dir),
             "--steps",
             "4",
+            "--allow-generator-gold",
         ]
     )
 

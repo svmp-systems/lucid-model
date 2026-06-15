@@ -135,6 +135,44 @@ def test_chat_memory_cli_smoke(tmp_path: Path, capsys):
     assert data["memories"] == []
 
 
+def test_chat_control_turns_do_not_leak_prior_domain_answers(tmp_path: Path):
+    audit_dir = tmp_path / "chat"
+    session_id = "control-turns"
+
+    ack = run_chat_turn(
+        "oh okay",
+        session_id=session_id,
+        audit_dir=audit_dir,
+        perception_backend="llm",
+    )
+    confused = run_chat_turn(
+        "huh?",
+        session_id=session_id,
+        audit_dir=audit_dir,
+        perception_backend="llm",
+    )
+    meta = run_chat_turn(
+        "why did it answer",
+        session_id=session_id,
+        audit_dir=audit_dir,
+        perception_backend="llm",
+    )
+
+    assert ack.assistant_output == "Okay."
+    assert "clarify" in confused.assistant_output.lower()
+    assert "treated the last short turn" in meta.assistant_output.lower()
+    assert not ack.run_audit_dir
+    assert not confused.run_audit_dir
+    assert not meta.run_audit_dir
+
+    session = json.loads((audit_dir / session_id / "session.json").read_text(encoding="utf-8"))
+    assert [turn["response_source"] for turn in session["turns"]] == [
+        "chat_control",
+        "chat_control",
+        "chat_control",
+    ]
+
+
 def test_chat_passes_bounded_session_context_into_runner(monkeypatch, tmp_path: Path):
     audit_dir = tmp_path / "chat"
     for index in range(10):
@@ -178,3 +216,29 @@ def test_chat_passes_bounded_session_context_into_runner(monkeypatch, tmp_path: 
         "state_turns": 8,
         "active_memories": 10,
     }
+
+
+def test_chat_resolves_explicit_loaded_checkpoint_before_runtime(monkeypatch, tmp_path: Path):
+    audit_dir = tmp_path / "chat"
+    seen = {}
+
+    monkeypatch.setattr(
+        "lucid.chat.resolve_inference_checkpoint",
+        lambda checkpoint: "checkpoints/loaded" if checkpoint == "loaded" else None,
+    )
+    original_run_episode = OrchestratorRunner.run_episode
+
+    def spy_run_episode(self, episode, **kwargs):
+        seen["checkpoint"] = self.config.checkpoint
+        return original_run_episode(self, episode, **kwargs)
+
+    monkeypatch.setattr(OrchestratorRunner, "run_episode", spy_run_episode)
+    run_chat_turn(
+        "What is a qubit?",
+        session_id="checkpoint-alias-smoke",
+        audit_dir=audit_dir,
+        perception_backend="rule",
+        checkpoint="loaded",
+    )
+
+    assert seen["checkpoint"] == "checkpoints/loaded"

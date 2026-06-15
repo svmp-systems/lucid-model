@@ -26,6 +26,7 @@ function toChatSession(session: ServerChatSession) {
     id: session.id,
     title: session.title,
     checkpointVersion: session.checkpointVersion,
+    updatedAt: session.updatedAt,
     messages: session.messages
   };
 }

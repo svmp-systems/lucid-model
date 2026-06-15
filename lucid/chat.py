@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -28,8 +29,10 @@ from lucid.cognition.pipe_orchestrator.runner import OrchestratorConfig, Orchest
 from lucid.ir.common import Modality, TaskIntent
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
+from lucid.training.checkpoint.slots import resolve_inference_checkpoint
 from lucid.training.checkpoint.store import load_checkpoint, save_checkpoint
 from lucid.training.learn.dmf import apply_lucidity_trace_feedback, learn_from_episode
+from lucid.runtime.paths import resolve_train_path
 
 
 @dataclass(slots=True)
@@ -56,7 +59,7 @@ def start_session(*, session_id: str | None = None, audit_dir: str | Path = "aud
 
 
 def list_sessions(*, audit_dir: str | Path = "audit/chat") -> list[str]:
-    root = Path(audit_dir)
+    root = resolve_train_path(audit_dir)
     if not root.exists():
         return []
     return sorted(path.name for path in root.iterdir() if (path / "session.json").exists())
@@ -76,6 +79,7 @@ def run_chat_turn(
         raise ValueError("chat input cannot be empty")
     if learn_to_dmf and not checkpoint:
         raise ValueError("chat DMF learning requires --checkpoint")
+    runtime_checkpoint = _resolve_chat_runtime_checkpoint(checkpoint)
 
     record = load_chat_record(audit_dir, session_id)
     if record is None:
@@ -87,6 +91,33 @@ def run_chat_turn(
     turn_index = len(record.turns) + 1
     refresh_history_views(record)
     session_context = build_session_context(record, memory, current_turn_index=turn_index)
+
+    control_reply = _chat_control_reply(text, record)
+    if control_reply:
+        turn = ChatAuditTurn(
+            turn_index=turn_index,
+            run_id=f"{session_id}-turn-{turn_index:04d}-chat-control",
+            user_input=text,
+            assistant_output=control_reply,
+            run_audit_dir="",
+            lucidity_decision="commit",
+            dmf_learning={},
+            response_source="chat_control",
+        )
+        events = update_session_memory_from_turn(memory, turn, lucidity_decision="commit")
+        turn.memory_events = [to_dict(event) for event in events]
+        save_session_memory(audit_dir, memory)
+        updated = append_chat_turn(audit_dir, session_id=session_id, turn=turn)
+        return ChatTurnResult(
+            session_id=session_id,
+            turn_index=turn_index,
+            run_id=turn.run_id,
+            assistant_output=control_reply,
+            session_audit_path=str(session_file(audit_dir, updated.session_id)),
+            run_audit_dir="",
+            dmf_learning=None,
+        )
+
     episode = Episode(
         episode_id=f"{session_id}-turn-{turn_index:04d}",
         modality=Modality.TEXT,
@@ -112,7 +143,7 @@ def run_chat_turn(
         config=OrchestratorConfig(
             audit_base_dir=str(audit_dir),
             perception=perception_cfg,
-            checkpoint=checkpoint,
+            checkpoint=runtime_checkpoint,
         )
     )
     run = runner.run_episode(
@@ -127,7 +158,11 @@ def run_chat_turn(
 
     response_source = "pipeline"
     memory_reply = memory_reply_for_text(text, memory)
-    if memory_reply and _pipeline_output_needs_memory_fallback(assistant_output):
+    if (
+        response_source == "pipeline"
+        and memory_reply
+        and _pipeline_output_needs_memory_fallback(assistant_output, user_input=text)
+    ):
         assistant_output = memory_reply
         response_source = "session_memory"
 
@@ -136,7 +171,7 @@ def run_chat_turn(
     dmf_learning: dict[str, object] | None = None
     if learn_to_dmf:
         dmf_learning = _learn_turn_into_dmf(
-            checkpoint=checkpoint,
+            checkpoint=runtime_checkpoint or checkpoint,
             audit_dir=audit_dir,
             session_id=session_id,
             turn_index=turn_index,
@@ -170,6 +205,13 @@ def run_chat_turn(
         run_audit_dir=run.context.audit_dir,
         dmf_learning=dmf_learning,
     )
+
+
+def _resolve_chat_runtime_checkpoint(checkpoint: str) -> str:
+    text = (checkpoint or "").strip()
+    if not text:
+        return ""
+    return resolve_inference_checkpoint(text) or text
 
 
 def _learn_turn_into_dmf(
@@ -242,9 +284,63 @@ def _next_store_id(records: list[object]) -> int:
     return max_seen + 1
 
 
-def _pipeline_output_needs_memory_fallback(text: str) -> bool:
+def _pipeline_output_needs_memory_fallback(text: str, *, user_input: str = "") -> bool:
     stripped = text.strip()
     if not stripped or stripped == "(no decoder output)":
         return True
     lowered = stripped.lower()
-    return "no approved text content was available" in lowered or lowered.startswith("(holding:")
+    if (
+        "no approved text content was available" in lowered
+        or "not confident enough to answer" in lowered
+        or lowered.startswith("(holding:")
+    ):
+        return True
+    if user_input:
+        user_words = _word_tokens(user_input)
+        out_words = _word_tokens(lowered)
+        if user_words and out_words:
+            overlap = len(set(user_words) & set(out_words)) / max(len(set(out_words)), 1)
+            if overlap >= 0.6 and len(out_words) <= len(user_words) + 3:
+                return True
+    return False
+
+
+def _word_tokens(text: str) -> list[str]:
+    normalized = re.sub(r"[^\w\s]", " ", text.lower())
+    return [token for token in normalized.split() if token]
+
+
+_ACK_RE = re.compile(
+    r"^(oh\s+)?(ok|okay|cool|great|nice|got it|understood|makes sense|alright|fine)$",
+    re.I,
+)
+_CONFUSION_RE = re.compile(
+    r"^(huh|uhh|wait what|what|what do you mean|i do not get it|i dont get it|confused)$",
+    re.I,
+)
+_WHY_ANSWER_RE = re.compile(
+    r"\bwhy\s+(did|do|are)\s+(it|you)\s+(answer|respond|say)\b|\bwhy did it answer\b",
+    re.I,
+)
+
+
+def _normalize_control_text(text: str) -> str:
+    normalized = re.sub(r"[^\w\s']", " ", text.lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _chat_control_reply(text: str, record: object) -> str:
+    _ = record
+    normalized = _normalize_control_text(text)
+    if not normalized:
+        return ""
+    if _WHY_ANSWER_RE.search(normalized):
+        return (
+            "I treated the last short turn as a new request. That should have been a "
+            "clarification or defer instead."
+        )
+    if _CONFUSION_RE.match(normalized):
+        return "I may have answered too eagerly. What part should I clarify?"
+    if _ACK_RE.match(normalized):
+        return "Okay."
+    return ""

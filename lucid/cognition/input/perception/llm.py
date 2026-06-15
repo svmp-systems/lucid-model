@@ -150,6 +150,8 @@ def perceive_llm(
                 raw, response_format = chat_result, "unknown"
             data = _parse_json(raw)
             graph = graph_from_dict(data, modality=modality)
+            if isinstance(inp.raw_payload, str):
+                graph.provenance.extra["raw_text"] = inp.raw_payload.strip()
             graph.provenance.extra["model"] = cfg.model
             graph.provenance.extra["llm_attempt"] = attempt + 1
             graph.provenance.extra["input_hash"] = payload_hash(inp.raw_payload)

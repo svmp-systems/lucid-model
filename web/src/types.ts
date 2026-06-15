@@ -15,6 +15,7 @@ export type ChatSession = {
   id: string;
   title: string;
   checkpointVersion: string;
+  updatedAt?: string;
   messages: ChatMessage[];
 };
 
@@ -40,6 +41,7 @@ export type ServerChatSession = {
   title: string;
   checkpointVersion: string;
   turnCount: number;
+  updatedAt?: string;
   messages: ChatMessage[];
 };
 

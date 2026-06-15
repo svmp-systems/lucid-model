@@ -127,6 +127,7 @@ def _perceive_text(inp: PerceptionInput) -> PerceptualEvidenceGraph:
     graph = PerceptualEvidenceGraph()
     graph.provenance.modality = Modality.TEXT
     graph.provenance.extra["backend"] = "rule"
+    graph.provenance.extra["raw_text"] = text.strip()
 
     unit_ids: list[str] = []
     unit_by_low: dict[str, str] = {}

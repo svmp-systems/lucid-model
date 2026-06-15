@@ -5,7 +5,7 @@ from __future__ import annotations
 from lucid.cognition.output.lucidity import run_checks, run_lucidity
 from lucid.cognition.output.lucidity.config import LucidityConfig
 from lucid.cognition.output.projector import run_projector
-from lucid.ir.basins import BasinOutput, CandidateBasinState, CompetitionSummary
+from lucid.ir.basins import BasinConflict, BasinOutput, CandidateBasinState, CompetitionSummary
 from lucid.ir.binding import BindingOutput, CandidateFrame
 from lucid.ir.common import LucidityDecision, TaskIntent
 from lucid.ir.context_op import ContextFrame, ContextOpOutput, InterferenceGate
@@ -98,6 +98,103 @@ def test_nine_checks_populated() -> None:
     assert checks.risk_check is not None
     assert checks.margin_check.passed is False
     assert confidence.margin == 0.04
+
+
+def test_maturity_uses_relevant_basin_traces_not_broad_recall() -> None:
+    inp = _bank_lucidity_input()
+    inp.dmf_output.active_traces = [
+        ActiveTrace("t_bank", 0.58, heat_tier="warm"),
+        ActiveTrace("t_background", 0.21, heat_tier="quarantine"),
+    ]
+    inp.basin_output.candidate_basin_states[0].supporting_trace_ids = ["t_bank"]
+
+    checks, _ = run_checks(inp, LucidityConfig())
+
+    assert checks.maturity_check is not None
+    assert checks.maturity_check.passed is True
+    assert checks.maturity_check.score == 1.0
+    assert checks.maturity_check.details["active_trace_count"] == 2
+    assert checks.maturity_check.details["relevant_trace_count"] == 1
+
+
+def test_source_backed_mature_basin_can_commit_with_local_binding_noise() -> None:
+    inp = LucidityInput(
+        basin_output=BasinOutput(
+            candidate_basin_states=[
+                CandidateBasinState(
+                    basin_id="b_qubit_definition",
+                    energy=0.68,
+                    supporting_trace_ids=["t_term_qubit"],
+                    coherence_score=0.85,
+                    source_refs=["ibm_quantum_computing"],
+                    heat_tier="warm",
+                    quantized_payload={
+                        "canonical_label": "qubit",
+                        "relations": [
+                            {
+                                "relation": "type_of",
+                                "target": "unit of quantum information",
+                                "confidence": 0.82,
+                                "source_refs": ["ibm_quantum_computing"],
+                            }
+                        ],
+                    },
+                )
+            ],
+            competition_summary=CompetitionSummary(
+                top_basin_id="b_qubit_definition",
+                top_margin=0.02,
+                active_basin_count=1,
+            ),
+            unresolved_conflicts=[
+                BasinConflict(
+                    scope_frame_id="cf_qubit",
+                    conflict_type="low_margin_competition",
+                    basin_ids=["b_qubit_definition", "b_qubit_mechanism"],
+                ),
+                BasinConflict(
+                    scope_frame_id="cf_other",
+                    conflict_type="low_margin_competition",
+                    basin_ids=["b_other_definition", "b_other_mechanism"],
+                ),
+            ],
+        ),
+        binding_output=BindingOutput(
+            candidate_frames=[
+                CandidateFrame(
+                    frame_id="local_u_qubit",
+                    frame_type="local_reading",
+                    confidence=0.1,
+                    conflicting_trace_ids=["t_background"],
+                )
+            ],
+            binding_stability_score=0.1,
+        ),
+        context_op_output=ContextOpOutput(),
+        interference_output=InterferenceOutput(),
+        dmf_output=DmfOutput(
+            active_traces=[
+                ActiveTrace("t_term_qubit", 0.64, heat_tier="warm"),
+                ActiveTrace("t_background", 0.2, heat_tier="quarantine"),
+            ],
+            coverage_score=0.75,
+        ),
+        perceptual_evidence_graph=PerceptualEvidenceGraph(),
+        task_intent="chat",
+    )
+
+    checks, _ = run_checks(inp, LucidityConfig())
+    assert checks.coherence_check is not None
+    assert checks.coherence_check.passed is False
+    assert checks.contradiction_check is not None
+    assert checks.contradiction_check.passed is True
+    assert checks.contradiction_check.details["ignored_basin_conflict_count"] == 2
+
+    out = run_lucidity(inp)
+
+    assert out.decision == LucidityDecision.COMMIT
+    assert out.committed_state is not None
+    assert out.committed_state.primary_basin_id == "b_qubit_definition"
 
 
 def test_low_margin_preserves_ambiguity() -> None:

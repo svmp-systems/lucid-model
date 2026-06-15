@@ -95,7 +95,7 @@ def test_plural_does_not_collapse_alternatives() -> None:
     policy = DecoderPolicy(
         mode=DecoderMode.EXPRESS_PLURAL.value,
         forbid_single_answer=True,
-        output_channel="chat",
+        output_channel="audit",
     )
     out = run_decoder(
         DecoderInput(
@@ -113,6 +113,48 @@ def test_plural_does_not_collapse_alternatives() -> None:
     assert "financial" in lowered or "b_fin" in lowered
     assert "river" in lowered or "b_river" in lowered
     assert "single reading" in lowered
+    assert out.faithfulness_report.passed
+
+
+def test_chat_plural_returns_uncertainty_not_audit_labels() -> None:
+    packet = LucidityRenderPacket(
+        packet_id=str(uuid4()),
+        decision=LucidityDecision.PRESERVE_AMBIGUITY,
+        render_mode="plural",
+        preserved_alternatives=[
+            {
+                "basin_id": "b_fin",
+                "narrative_hint": "financial bank",
+                "source_refs": [SourceRef(ref_type="basin", ref_id="b_fin")],
+            },
+            {
+                "basin_id": "b_river",
+                "narrative_hint": "river bank",
+                "source_refs": [SourceRef(ref_type="basin", ref_id="b_river")],
+            },
+        ],
+    )
+    policy = DecoderPolicy(
+        mode=DecoderMode.EXPRESS_PLURAL.value,
+        forbid_single_answer=True,
+        output_channel="chat",
+    )
+    out = run_decoder(
+        DecoderInput(
+            lucidity_output=LucidityOutput(
+                decision=LucidityDecision.PRESERVE_AMBIGUITY,
+                decoder_policy=policy,
+                render_packet=packet,
+            ),
+            render_packet=packet,
+            decoder_policy=policy,
+        )
+    )
+
+    lowered = out.surface_text.lower()
+    assert "not confident" in lowered
+    assert "b_fin" not in lowered
+    assert "b_river" not in lowered
     assert out.faithfulness_report.passed
 
 
@@ -296,10 +338,187 @@ def test_canvas_decoder_renders_source_backed_graph_claim() -> None:
         )
     )
 
-    assert "qubit is unit of quantum information" in out.surface_text.lower()
+    assert "a qubit is a unit of quantum information" in out.surface_text.lower()
     assert "decoder:canvas_builder" in out.audit_notes
     assert "decoder:route=canvas" in out.audit_notes
     assert out.faithfulness_report.passed
+
+
+def test_fluent_decoder_renders_contrast_relation_as_clause() -> None:
+    packet = LucidityRenderPacket(
+        packet_id="contrast",
+        decision=LucidityDecision.COMMIT,
+        render_mode="committed",
+        output_format="text",
+        approved_units=[
+            RenderUnit(
+                unit_id="graph-claim-0",
+                unit_type="claim",
+                payload={
+                    "subject": "qubit",
+                    "relation": "contrast",
+                    "target": "But instead of regular classical bits, quantum computers use quantum bits.",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="quantum_article")],
+            )
+        ],
+    )
+    policy = DecoderPolicy(mode=DecoderMode.EXPRESS_COMMITTED.value, output_channel="chat")
+
+    out = run_decoder(
+        DecoderInput(
+            lucidity_output=LucidityOutput(
+                decision=LucidityDecision.COMMIT,
+                decoder_policy=policy,
+                render_packet=packet,
+            ),
+            render_packet=packet,
+            decoder_policy=policy,
+        )
+    )
+
+    assert "qubit contrast" not in out.surface_text.lower()
+    assert out.surface_text == "Instead of regular classical bits, quantum computers use quantum bits."
+    assert out.faithfulness_report.passed
+
+
+def test_fluent_decoder_composes_definition_answer() -> None:
+    packet = LucidityRenderPacket(
+        packet_id="quantum-definition",
+        decision=LucidityDecision.COMMIT,
+        render_mode="committed",
+        output_format="text",
+        approved_units=[
+            RenderUnit(
+                unit_id="graph-claim-0",
+                unit_type="claim",
+                payload={
+                    "subject": "qubit",
+                    "relation": "type_of",
+                    "target": "unit of quantum information",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="ibm_quantum_computing")],
+            ),
+            RenderUnit(
+                unit_id="graph-claim-1",
+                unit_type="claim",
+                payload={
+                    "subject": "qubit",
+                    "relation": "property",
+                    "target": "can be prepared in superposition",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="nist_quantum_explained")],
+            ),
+            RenderUnit(
+                unit_id="graph-claim-2",
+                unit_type="claim",
+                payload={
+                    "subject": "qubit",
+                    "relation": "challenge",
+                    "target": "noise and environmental disturbance",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="nist_quantum_explained")],
+            ),
+        ],
+    )
+    policy = DecoderPolicy(mode=DecoderMode.EXPRESS_COMMITTED.value, output_channel="chat")
+
+    out = run_decoder(
+        DecoderInput(
+            lucidity_output=LucidityOutput(
+                decision=LucidityDecision.COMMIT,
+                decoder_policy=policy,
+                render_packet=packet,
+            ),
+            render_packet=packet,
+            decoder_policy=policy,
+        )
+    )
+
+    assert (
+        out.surface_text
+        == "A qubit is a unit of quantum information. It can be prepared in superposition, "
+        "but it is limited by noise and environmental disturbance."
+    )
+    assert "classical bit" not in out.surface_text.lower()
+    assert out.faithfulness_report.passed
+    assert len(out.sentence_refs) == 2
+    assert set(out.sentence_refs[0].unit_ids) == {
+        "graph-claim-0",
+        "graph-claim-1",
+        "graph-claim-2",
+    }
+    assert set(out.sentence_refs[1].unit_ids) == set(out.sentence_refs[0].unit_ids)
+
+
+def test_fluent_decoder_merges_repeated_uses_claims() -> None:
+    packet = LucidityRenderPacket(
+        packet_id="quantum-fluent",
+        decision=LucidityDecision.COMMIT,
+        render_mode="committed",
+        output_format="text",
+        approved_units=[
+            RenderUnit(
+                unit_id="graph-claim-0",
+                unit_type="claim",
+                payload={
+                    "subject": "quantum computing",
+                    "relation": "uses",
+                    "target": "quantum mechanics",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="quantum_mechanics")],
+            ),
+            RenderUnit(
+                unit_id="graph-claim-1",
+                unit_type="claim",
+                payload={
+                    "subject": "quantum computing",
+                    "relation": "uses",
+                    "target": "qubits",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="qubits")],
+            ),
+            RenderUnit(
+                unit_id="graph-claim-2",
+                unit_type="claim",
+                payload={
+                    "subject": "quantum computing",
+                    "relation": "uses",
+                    "target": "quantum entanglement and quantum interference",
+                },
+                required=True,
+                source_refs=[SourceRef(ref_type="source", ref_id="entanglement")],
+            ),
+        ],
+    )
+    policy = DecoderPolicy(mode=DecoderMode.EXPRESS_COMMITTED.value, output_channel="chat", max_sentences=2)
+
+    out = run_decoder(
+        DecoderInput(
+            lucidity_output=LucidityOutput(
+                decision=LucidityDecision.COMMIT,
+                decoder_policy=policy,
+                render_packet=packet,
+            ),
+            render_packet=packet,
+            decoder_policy=policy,
+            output_channel="chat",
+        )
+    )
+
+    lowered = out.surface_text.lower()
+    assert lowered.count("quantum computing uses") == 1
+    assert "quantum mechanics" in lowered
+    assert "qubits" in lowered
+    assert "entanglement" in lowered
+    assert out.faithfulness_report.passed
+    assert "decoder:fluent_realizer" in out.audit_notes
 
 
 def test_committed_frame_summaries_compose_fluid_surface() -> None:

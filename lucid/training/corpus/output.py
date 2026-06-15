@@ -62,3 +62,36 @@ def build_phase1_pack(out_dir: Path | str, *, seed: int = 42) -> list[Episode]:
         encoding="utf-8",
     )
     return all_episodes
+
+
+GENERAL_LANGUAGE_COUNTS: dict[str, int] = {
+    "chat_social": 120,
+}
+
+
+def build_general_language_pack(out_dir: Path | str, *, seed: int = 42) -> list[Episode]:
+    """General conversational language episodes for social speech training."""
+    root = Path(out_dir)
+    all_episodes: list[Episode] = []
+
+    for index, (name, count) in enumerate(GENERAL_LANGUAGE_COUNTS.items()):
+        batch = generate(name, count, seed=seed + index * 1000)
+        write_episodes(batch, root / f"{name}.jsonl")
+        all_episodes.extend(batch)
+
+    errors = check_batch(all_episodes)
+    if errors:
+        raise RuntimeError("general language pack failed checks:\n" + "\n".join(errors[:20]))
+
+    write_episodes(all_episodes, root / "all.jsonl")
+    (root / "readme.txt").write_text(
+        "\n".join(
+            [
+                "Lucid general language episodes",
+                f"total: {len(all_episodes)}",
+                f"seed: {seed}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return all_episodes

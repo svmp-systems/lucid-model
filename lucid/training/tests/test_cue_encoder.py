@@ -165,6 +165,7 @@ def test_cue_encoder_calibrate_training_patches_missing_routes(tmp_path: Path):
             str(checkpoint),
             "--audit-dir",
             str(tmp_path / "audit"),
+            "--allow-generator-gold",
         ]
     )
 
@@ -191,6 +192,7 @@ def test_cue_encoder_training_builds_runtime_feature_index(tmp_path: Path):
             str(checkpoint),
             "--audit-dir",
             str(tmp_path / "audit"),
+            "--allow-generator-gold",
         ]
     )
 

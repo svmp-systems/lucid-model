@@ -6,7 +6,7 @@ import type {
   ServerChatSession
 } from "@/src/types";
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -131,10 +131,12 @@ async function runLocalChatTurn(payload: ChatTurnRequest): Promise<ChatTurnRespo
     payload.sessionId,
     "--audit-dir",
     chatAuditDir(),
-    "--perception",
-    process.env.LUCID_WEB_PERCEPTION || "rule",
     "--json"
   ];
+  const perception = (process.env.LUCID_WEB_PERCEPTION || process.env.LUCID_PERCEPTION_BACKEND || "").trim();
+  if (perception) {
+    args.push("--perception", perception);
+  }
   appendCheckpointArgs(args, payload.checkpointVersion);
 
   const { stdout, stderr } = await runLucidCli(args);
@@ -258,6 +260,16 @@ export async function loadLocalSessionRecord(sessionId: string): Promise<Session
   }
 }
 
+async function sessionUpdatedAt(sessionId: string): Promise<string> {
+  const sessionPath = path.join(resolveChatAuditRoot(), sessionId, "session.json");
+  try {
+    const info = await stat(sessionPath);
+    return info.mtime.toISOString();
+  } catch {
+    return "";
+  }
+}
+
 export function turnsToMessages(turns: SessionTurnRecord[], checkpointVersion = "loaded"): ChatMessage[] {
   const messages: ChatMessage[] = [];
   for (const turn of turns) {
@@ -301,6 +313,7 @@ export async function loadLocalChatSession(
     title: firstUser ? shortTitle(String(firstUser)) : "Untitled session",
     checkpointVersion,
     turnCount: turns.length,
+    updatedAt: await sessionUpdatedAt(sessionId),
     messages
   };
 }
@@ -329,10 +342,13 @@ export async function listLocalChatSessions(
     ids.map((id) => loadLocalChatSession(id, checkpointPrefs[id] || "loaded"))
   );
   return sessions.sort((a, b) => {
-    const aTurn = a.turnCount;
-    const bTurn = b.turnCount;
-    if (aTurn !== bTurn) {
-      return bTurn - aTurn;
+    const aTime = Date.parse(a.updatedAt || "");
+    const bTime = Date.parse(b.updatedAt || "");
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+      return bTime - aTime;
+    }
+    if (Number.isFinite(aTime) !== Number.isFinite(bTime)) {
+      return Number.isFinite(bTime) ? 1 : -1;
     }
     return b.id.localeCompare(a.id);
   });
@@ -402,24 +418,32 @@ export async function listLocalCheckpoints() {
       }))
       .filter((row) => row.id)
       .sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }));
+    const registryIds = new Set(checkpoints.map((checkpoint) => checkpoint.id));
+    const orphanSaves = (await listSavedCheckpointDirs(savesDir))
+      .filter((checkpoint) => !registryIds.has(checkpoint.id))
+      .sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }));
 
-    return checkpoints.length ? markDefault([...checkpoints, ...versions]) : markDefault(versions);
+    return markDefault([...versions, ...orphanSaves, ...checkpoints]);
   } catch {
     try {
-      const entries = await readdir(savesDir, { withFileTypes: true });
-      const checkpoints = entries
-        .filter((entry) => entry.isDirectory() && /^cp_\d+$/.test(entry.name))
-        .map((entry) => ({
-          id: entry.name,
-          label: entry.name,
-          detail: "Saved checkpoint"
-        }))
+      const checkpoints = (await listSavedCheckpointDirs(savesDir))
         .sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }));
-      return checkpoints.length ? markDefault([...checkpoints, ...versions]) : markDefault(versions);
+      return markDefault([...versions, ...checkpoints]);
     } catch {
       return markDefault(versions);
     }
   }
+}
+
+async function listSavedCheckpointDirs(savesDir: string) {
+  const entries = await readdir(savesDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({
+      id: entry.name,
+      label: entry.name,
+      detail: "Saved checkpoint"
+    }));
 }
 
 function markDefault<T extends { id: string; isDefault?: boolean }>(versions: T[]) {

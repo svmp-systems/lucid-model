@@ -11,8 +11,41 @@ from lucid.cognition.output.decoder.discourse_plan import plan_discourse
 from lucid.cognition.output.decoder.realization_ops import plan_realization
 from lucid.cognition.output.decoder.structural_faithfulness import check_structural_faithfulness
 from lucid.ir.common import DecoderMode
-from lucid.ir.expression import DecoderInput, DecoderOutput, FaithfulnessReport
+from lucid.ir.expression import DecoderInput, DecoderOutput, FaithfulnessReport, SentenceRef
 from lucid.ir.lucidity import LucidityRenderPacket
+
+
+def _render_chat_uncertainty(packet: LucidityRenderPacket, *, render_mode: str | None = None) -> DecoderOutput:
+    refs = []
+    for alt in packet.preserved_alternatives:
+        for ref in alt.get("source_refs") or []:
+            if hasattr(ref, "ref_type") and hasattr(ref, "ref_id"):
+                refs.append(ref)
+            elif isinstance(ref, dict) and ref.get("ref_id"):
+                from lucid.ir.lucidity import SourceRef
+
+                refs.append(
+                    SourceRef(
+                        ref_type=str(ref.get("ref_type") or "basin"),
+                        ref_id=str(ref["ref_id"]),
+                        scope_frame_id=str(ref.get("scope_frame_id") or ""),
+                        role=str(ref.get("role") or ""),
+                    )
+                )
+    sentence_refs = [
+        SentenceRef(
+            sentence_id="s0",
+            source_refs=refs,
+            unit_ids=[],
+        )
+    ]
+    return DecoderOutput(
+        surface_text="I'm not confident enough to answer from the current memory.",
+        render_mode=render_mode or packet.render_mode,
+        sentence_refs=sentence_refs,
+        uncertainty_presentation={"alternatives": len(packet.preserved_alternatives)},
+        audit_notes=["decoder:chat_uncertainty"],
+    )
 
 
 def run_decoder(inp: DecoderInput, ctx: object | None = None) -> DecoderOutput:
@@ -23,6 +56,16 @@ def run_decoder(inp: DecoderInput, ctx: object | None = None) -> DecoderOutput:
     channel = (inp.output_channel or policy.output_channel or "chat").strip().lower()
 
     if policy.mode == DecoderMode.HOLD.value or (packet and packet.render_mode == "hold"):
+        if channel == "chat":
+            return _render_chat_uncertainty(
+                packet
+                or LucidityRenderPacket(
+                    packet_id="hold",
+                    decision=inp.lucidity_output.decision,
+                    render_mode="hold",
+                ),
+                render_mode="hold",
+            )
         out = route_render(
             packet
             or LucidityRenderPacket(
@@ -54,7 +97,10 @@ def run_decoder(inp: DecoderInput, ctx: object | None = None) -> DecoderOutput:
         program=program,
         policy=policy,
     )
-    draft = route_render(packet, policy)
+    if channel == "chat" and packet.render_mode == "plural" and policy.forbid_single_answer:
+        draft = _render_chat_uncertainty(packet)
+    else:
+        draft = route_render(packet, policy)
 
     report = check_faithfulness(
         surface_text=draft.surface_text,

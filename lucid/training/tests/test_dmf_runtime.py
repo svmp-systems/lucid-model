@@ -8,6 +8,7 @@ from lucid.ir.common import ComputePolicy, MaturityState
 from lucid.ir.cue import CueCloud, RelationalActivationRequest, TraceActivationRequest
 from lucid.ir.dmf import DmfInput
 from lucid.cognition.memory.dmf import DmfTraceRecord, DynamicMemoryField
+from lucid.memory.cue_match import best_affinity_for_cue
 from lucid.training.learn.dmf import apply_lucidity_trace_feedback, learn_from_episode
 
 
@@ -351,6 +352,18 @@ def test_dmf_phrase_affinity_matches_head_word_cue():
     active = {trace.trace_id for trace in out.active_traces}
     assert active == {"t-finance", "t-outdoor"}
     assert all(trace.activation > 0.0 for trace in out.active_traces)
+
+
+def test_single_token_cue_does_not_overmatch_compound_affinity():
+    affinity = best_affinity_for_cue(
+        "qubit",
+        {
+            "superconducting_qubit": 0.95,
+            "qubit": 0.3325,
+        },
+    )
+
+    assert affinity == 0.3325
 
 
 def test_dmf_retrieval_uses_sparse_candidate_index():

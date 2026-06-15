@@ -43,6 +43,8 @@ from lucid.training.loop.promotion import CheckpointPromotionHook
 from lucid.training.loop.pipeline import PipelineRunExecutor
 from lucid.training.loop.orchestrator import TrainingOrchestrator
 from lucid.training.loop.pipeline import _PipelineStage
+from lucid.training.modules.base import write_module_audit
+from lucid.training.source_policy import training_source_policy
 
 
 MODULE_TO_DIAGNOSIS = {
@@ -102,6 +104,15 @@ def _load_episodes(args: argparse.Namespace) -> list[Episode]:
     if args.episodes:
         return adapters.load_training_episodes(args.episodes)
     return adapters.fixture_episodes(args.fixture)
+
+
+def _validate_checkpoint_target(path: str | Path, *, force: bool = False) -> None:
+    root = resolve_train_path(path)
+    manifest_path = root / "manifest.json"
+    if root.exists() and any(root.iterdir()) and not manifest_path.exists() and not force:
+        raise FileExistsError(
+            f"{root} is not a Lucid checkpoint; pass --force to overwrite/create here"
+        )
 
 
 def _bounded_episodes(episodes: list[Episode], steps: int) -> list[Episode]:
@@ -217,6 +228,7 @@ def _write_train_manifest(
 def _run_module_training(args: argparse.Namespace) -> int:
     trainer = get_trainer(args.target)
     episodes = _bounded_episodes(_load_episodes(args), args.steps)
+    _validate_checkpoint_target(args.checkpoint, force=args.force)
     state = load_checkpoint(args.checkpoint, create=True)
     before_summary = checkpoint_summary(state)
     run_dir = resolve_train_path(args.audit_dir) / _new_run_id(args.target, state.checkpoint_id)
@@ -228,11 +240,31 @@ def _run_module_training(args: argparse.Namespace) -> int:
         step_episode = episode
         if args.target == "cue_encoder" and getattr(args, "mode", None):
             step_episode = replace(episode, meta={**episode.meta, "train_mode": args.mode})
+        policy = training_source_policy(
+            step_episode,
+            allow_generator_gold=getattr(args, "allow_generator_gold", False),
+        )
+        if not policy.promotion_eligible:
+            before = checkpoint_summary(working_state)
+            result = write_module_audit(
+                audit_dir=step_dir,
+                module=args.target,
+                episode=step_episode,
+                action="DEFER",
+                reason=policy.block_reason,
+                before=before,
+                after=before,
+                updated_objects=[],
+                metrics={"training_policy": policy.as_dict()},
+            )
+            results.append(result)
+            continue
         result = trainer.train(step_episode, working_state, step_dir)
         results.append(result)
 
-    if not args.dry_run:
-        save_checkpoint(state, args.checkpoint, force=args.force, step_delta=len(results))
+    update_count = sum(1 for result in results if result.action == "UPDATE")
+    if not args.dry_run and update_count:
+        save_checkpoint(state, args.checkpoint, force=args.force, step_delta=update_count)
 
     after_summary = checkpoint_summary(working_state)
     _write_train_manifest(
@@ -244,7 +276,7 @@ def _run_module_training(args: argparse.Namespace) -> int:
         before=before_summary,
         after=after_summary,
     )
-    archived = _finalize_training(args, command=f"train {args.target}")
+    archived = _finalize_training(args, command=f"train {args.target}") if update_count else None
     payload: dict[str, Any] = {
         "target": args.target,
         "checkpoint": args.checkpoint,
@@ -408,6 +440,7 @@ def _global_governor_decision(
 
 def _run_global_training(args: argparse.Namespace) -> int:
     episodes = _bounded_episodes(_load_episodes(args), args.steps)
+    _validate_checkpoint_target(args.checkpoint, force=args.force)
     state = load_checkpoint(args.checkpoint, create=True)
     before_summary = checkpoint_summary(state)
     governor = TrainingGovernor()
@@ -418,6 +451,45 @@ def _run_global_training(args: argparse.Namespace) -> int:
 
     for step_index, episode in enumerate(episodes, start=1):
         step_dir = run_dir / f"step_{step_index:06d}_{_safe_part(episode.episode_id)}"
+        policy = training_source_policy(
+            episode,
+            allow_generator_gold=getattr(args, "allow_generator_gold", False),
+        )
+        if not policy.promotion_eligible:
+            decision = {
+                "action": "DEFER",
+                "reason": policy.block_reason,
+                "audit_log": {"training_policy": policy.as_dict()},
+            }
+            _write_json(
+                step_dir / "governor_decision.json",
+                {
+                    "schema_version": 1,
+                    "decision": decision,
+                },
+            )
+            unchanged = content_hash(checkpoint_summary(state))
+            result = TrainingResult(
+                module="global",
+                action="DEFER",
+                episode_id=episode.episode_id,
+                before_hash=unchanged,
+                after_hash=unchanged,
+                reason=policy.block_reason,
+                audit_path=str(step_dir),
+                metrics={"training_policy": policy.as_dict()},
+            )
+            results.append(result)
+            governor_records.append(
+                {
+                    "step_index": step_index,
+                    "episode_id": episode.episode_id,
+                    "target_module": "none",
+                    "decision": decision,
+                    "training_policy": policy.as_dict(),
+                }
+            )
+            continue
         target_module = _global_target_module(episode, state)
         decision = _global_governor_decision(episode, state, target_module, governor)
         _write_json(
@@ -462,8 +534,8 @@ def _run_global_training(args: argparse.Namespace) -> int:
         else:
             results.append(shadow_result)
 
-    if not args.dry_run:
-        save_checkpoint(state, args.checkpoint, force=args.force, step_delta=len(results))
+    if not args.dry_run and promoted:
+        save_checkpoint(state, args.checkpoint, force=args.force, step_delta=promoted)
 
     after_summary = checkpoint_summary(state)
     _write_train_manifest(
@@ -476,7 +548,7 @@ def _run_global_training(args: argparse.Namespace) -> int:
         after=after_summary,
         governor_records=governor_records,
     )
-    archived = _finalize_training(args, command="train global")
+    archived = _finalize_training(args, command="train global") if promoted else None
     payload: dict[str, Any] = {
         "target": "global",
         "checkpoint": args.checkpoint,
@@ -508,14 +580,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _training_episodes(args: argparse.Namespace) -> list:
     episodes = _load_episodes(args)
-    training = [to_training_episode(episode) for episode in episodes]
-    for row in training:
-        row.validator_type = "gold_episode"
-    return training
+    return [
+        to_training_episode(
+            episode,
+            allow_generator_gold=getattr(args, "allow_generator_gold", False),
+        )
+        for episode in episodes
+    ]
 
 
 def _cmd_loop(args: argparse.Namespace) -> int:
     training = _training_episodes(args)
+    _validate_checkpoint_target(args.checkpoint, force=args.force)
     executor = PipelineRunExecutor(
         checkpoint=args.checkpoint,
         audit_base_dir=args.audit_dir,
@@ -542,7 +618,11 @@ def _cmd_loop(args: argparse.Namespace) -> int:
         )
     orchestrator.run(max(1, int(args.steps)))
     status = orchestrator.get_status()
-    archived = _finalize_training(args, command="train loop")
+    archived = (
+        _finalize_training(args, command="train loop")
+        if status.get("patch_history_count", 0) > 0
+        else None
+    )
     if archived:
         status["archived_save"] = archived
     print(json.dumps(status, indent=2, sort_keys=True))
@@ -682,6 +762,13 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--pin",
         action="store_true",
         help="After archive, copy the save into the loaded slot for lucid ask / run",
+    )
+    parser.add_argument(
+        "--allow-generator-gold",
+        "--allow-legacy-generator-gold",
+        dest="allow_generator_gold",
+        action="store_true",
+        help="Legacy escape hatch: let generated recipe gold mutate checkpoints",
     )
 
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 @dataclass(slots=True)
 class LucidityConfig:
     margin_threshold_answer: float = 0.08
+    margin_threshold_chat: float = 0.0
     margin_threshold_solve_grid: float = 0.10
     coverage_threshold: float = 0.55
     coherence_threshold: float = 0.65
@@ -25,6 +26,8 @@ class LucidityConfig:
             return self.margin_threshold_solve_grid
         if task == "solve_grid":
             return 1.0
+        if task == "chat":
+            return self.margin_threshold_chat
         return self.margin_threshold_answer
 
 

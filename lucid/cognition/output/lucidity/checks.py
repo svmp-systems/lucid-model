@@ -105,6 +105,74 @@ def _basin_by_id(basins: BasinOutput) -> dict[str, CandidateBasinState]:
     return {state.basin_id: state for state in basins.candidate_basin_states if state.basin_id}
 
 
+def _maturity_trace_ids(basins: BasinOutput) -> set[str]:
+    top_id = basins.competition_summary.top_basin_id
+    top = next(
+        (state for state in basins.candidate_basin_states if state.basin_id == top_id),
+        None,
+    )
+    trace_ids: set[str] = set()
+    if top is not None:
+        trace_ids.update(trace_id for trace_id in top.supporting_trace_ids if trace_id)
+        for member_id in top.member_basin_ids:
+            member = next(
+                (
+                    state
+                    for state in basins.candidate_basin_states
+                    if state.basin_id == member_id
+                    and set(state.scope_frame_ids) == set(top.scope_frame_ids)
+                ),
+                None,
+            )
+            if member is not None:
+                trace_ids.update(trace_id for trace_id in member.supporting_trace_ids if trace_id)
+    if trace_ids:
+        return trace_ids
+    for state in basins.candidate_basin_states[:3]:
+        trace_ids.update(trace_id for trace_id in state.supporting_trace_ids if trace_id)
+    return trace_ids
+
+
+_BASIN_FACET_SUFFIXES = {
+    "capability",
+    "challenge",
+    "contrast",
+    "definition",
+    "mechanism",
+    "measurement",
+    "property",
+    "speech",
+}
+
+
+def _basin_root(basin_id: str) -> str:
+    text = str(basin_id or "").strip()
+    if text.startswith("b_"):
+        text = text[2:]
+    parts = [part for part in text.split("_") if part]
+    if len(parts) > 1 and parts[-1] in _BASIN_FACET_SUFFIXES:
+        parts = parts[:-1]
+    return "_".join(parts)
+
+
+def _blocking_basin_conflict_count(basins: BasinOutput) -> tuple[int, int]:
+    top_id = basins.competition_summary.top_basin_id
+    blocking = 0
+    ignored = 0
+    for conflict in basins.unresolved_conflicts:
+        ids = [basin_id for basin_id in conflict.basin_ids if basin_id]
+        if conflict.conflict_type == "low_margin_competition":
+            if top_id and top_id not in ids:
+                ignored += 1
+                continue
+            roots = {_basin_root(basin_id) for basin_id in ids if _basin_root(basin_id)}
+            if len(roots) == 1:
+                ignored += 1
+                continue
+        blocking += 1
+    return blocking, ignored
+
+
 def _scope_score(
     context_op: ContextOpOutput,
     binding: BindingOutput,
@@ -299,7 +367,7 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
         for edge in inp.interference_output.basin_basin_edges
         if edge.relation == "compete" and edge.delta <= -config.contradiction_severity_threshold
     ]
-    basin_conflicts = len(inp.basin_output.unresolved_conflicts)
+    basin_conflicts, ignored_basin_conflicts = _blocking_basin_conflict_count(inp.basin_output)
     contradiction_score = 1.0
     if hard_conflicts:
         contradiction_score -= min(0.6, 0.2 * len(hard_conflicts))
@@ -319,6 +387,7 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
             "interference_conflict_count": len(interference_reports),
             "severe_basin_edge_count": len(severe_basin_edges),
             "basin_conflict_count": basin_conflicts,
+            "ignored_basin_conflict_count": ignored_basin_conflicts,
             "interference_conflict_ids": [
                 getattr(report, "report_id", "") for report in interference_reports
             ],
@@ -326,11 +395,19 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
     )
 
     active = inp.dmf_output.active_traces
-    if not active:
+    active_by_id = {trace.trace_id: trace for trace in active if trace.trace_id}
+    relevant_ids = _maturity_trace_ids(inp.basin_output)
+    relevant = [
+        active_by_id[trace_id]
+        for trace_id in relevant_ids
+        if trace_id in active_by_id
+    ]
+    maturity_pool = relevant or active
+    if not maturity_pool:
         maturity_score = 0.5
     else:
-        hot = sum(1 for trace in active if trace.heat_tier in {"hot", "warm", "stabilized"})
-        maturity_score = hot / len(active)
+        hot = sum(1 for trace in maturity_pool if trace.heat_tier in {"hot", "warm", "stabilized"})
+        maturity_score = hot / len(maturity_pool)
     maturity_pass = maturity_score >= config.maturity_hot_fraction or risk_level == "low"
     if risk_level == "high" and maturity_score < config.maturity_hot_fraction and pass_kind != "final_check":
         maturity_pass = False
@@ -338,7 +415,12 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
         passed=maturity_pass,
         score=maturity_score,
         threshold=config.maturity_hot_fraction,
-        details={"active_trace_count": len(active), "risk_level": risk_level},
+        details={
+            "active_trace_count": len(active),
+            "relevant_trace_count": len(maturity_pool),
+            "relevant_trace_ids": sorted(trace.trace_id for trace in maturity_pool if trace.trace_id),
+            "risk_level": risk_level,
+        },
     )
 
     needs_projection = task == "solve_grid" or risk_level == "high"

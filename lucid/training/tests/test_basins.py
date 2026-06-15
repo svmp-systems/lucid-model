@@ -396,6 +396,71 @@ def test_suppression_links_penalize_target_in_same_scope(tmp_path: Path) -> None
     assert energy_by_id["b_source"] - energy_by_id["b_target"] == pytest.approx(0.25)
 
 
+def test_activation_signature_wakes_source_backed_basin(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "basin_bank.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "basin_id": "b_qubit",
+                        "family_hint": "qubit",
+                        "frame_affinities": {},
+                        "activation_signature": {"t_qubit": 1.0, "qubit": 0.8},
+                        "semantic_signature": {"qubit": 1.0},
+                        "evidence_handles": ["concept:qubit", "claim:qubit:0"],
+                        "relation_handles": ["relation:qubit:0:type_of"],
+                        "source_refs": ["ibm_quantum_computing"],
+                        "trust_score": 0.82,
+                        "heat_tier": "quarantine",
+                        "quantized_payload": {
+                            "precision": "uint8_sparse",
+                            "canonical_label": "qubit",
+                            "relations": [
+                                {
+                                    "relation": "type_of",
+                                    "target": "unit of quantum information",
+                                    "confidence": 0.92,
+                                    "source_refs": ["ibm_quantum_computing"],
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "next_id": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = run_basins(
+        BasinInput(
+            interference_output=InterferenceOutput(),
+            candidate_frames=[
+                CandidateFrame(
+                    frame_id="frame_question",
+                    frame_type="concept",
+                    confidence=0.9,
+                    supporting_trace_ids=["t_qubit"],
+                )
+            ],
+            context_frames=[
+                ContextFrame(context_frame_id="scope_question", member_frame_ids=["frame_question"]),
+            ],
+        ),
+        config=BasinsConfig(checkpoint=checkpoint),
+    )
+
+    assert [state.basin_id for state in out.candidate_basin_states] == ["b_qubit"]
+    state = out.candidate_basin_states[0]
+    assert state.evidence_handles == ["concept:qubit", "claim:qubit:0"]
+    assert state.relation_handles == ["relation:qubit:0:type_of"]
+    assert state.source_refs == ["ibm_quantum_computing"]
+    assert state.quantized_payload["precision"] == "uint8_sparse"
+    assert "basin_evidence_handles=2" in out.audit_notes
+
+
 def test_basins_trainer_and_gold_families(tmp_path: Path) -> None:
     from lucid.training.corpus.engine import AmbiguityKnob, rng_for_seed
     from lucid.training.corpus.output import write_episodes
@@ -416,6 +481,7 @@ def test_basins_trainer_and_gold_families(tmp_path: Path) -> None:
                 str(checkpoint),
                 "--steps",
                 "1",
+                "--allow-generator-gold",
             ]
         )
         == 0
@@ -437,7 +503,8 @@ def test_basins_trainer_and_gold_families(tmp_path: Path) -> None:
         str(record["basin_id"]): normalize_family_hint(str(record.get("family_hint", "")))
         for record in store.get("records", [])
     }
-    assert all("maturity_state" not in record and "heat_tier" not in record for record in store["records"])
+    assert all(record.get("heat_tier") == "quarantine" for record in store["records"])
+    assert all(record.get("quantized_payload", {}).get("precision") == "uint8_sparse" for record in store["records"])
     active_families = {
         family_by_id[state.basin_id]
         for state in out.candidate_basin_states
@@ -456,7 +523,19 @@ def test_orchestrator_basins_after_train(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint"
     jsonl = tmp_path / "ep.jsonl"
     write_episodes([episode], jsonl)
-    lucid_main(["train", "basins", "--episodes", str(jsonl), "--checkpoint", str(checkpoint), "--steps", "1"])
+    lucid_main(
+        [
+            "train",
+            "basins",
+            "--episodes",
+            str(jsonl),
+            "--checkpoint",
+            str(checkpoint),
+            "--steps",
+            "1",
+            "--allow-generator-gold",
+        ]
+    )
 
     runner = OrchestratorRunner(
         config=OrchestratorConfig(

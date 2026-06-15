@@ -29,6 +29,7 @@ def test_orchestrator_dmf_activates_traces_from_checkpoint(tmp_path: Path) -> No
             str(tmp_path / "train-audit"),
             "--steps",
             "1",
+            "--allow-generator-gold",
         ]
     )
     assert train_exit == 0

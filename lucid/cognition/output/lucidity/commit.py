@@ -115,9 +115,15 @@ def _graph_node_label(frame: CandidateFrame, node_id: str) -> str:
     return node_id
 
 
-def _graph_relation_render_units(inp: LucidityInput) -> list[RenderUnit]:
+def _norm_label(value: object) -> str:
+    return "_".join(str(value or "").strip().lower().replace("-", " ").split())
+
+
+def _graph_relation_render_units(inp: LucidityInput, *, subject_filter: str = "") -> list[RenderUnit]:
     units: list[RenderUnit] = []
     index = 0
+    seen_claims: set[tuple[str, str, str]] = set()
+    subject_filter_key = _norm_label(subject_filter)
     for frame in inp.binding_output.candidate_frames:
         for graph in frame.local_graphs:
             for edge in graph.edges:
@@ -129,6 +135,16 @@ def _graph_relation_render_units(inp: LucidityInput) -> list[RenderUnit]:
                 target = _graph_node_label(frame, edge.target_id)
                 if not subject or not target:
                     continue
+                if subject_filter_key and _norm_label(subject) != subject_filter_key:
+                    continue
+                claim_key = (
+                    subject.strip().lower(),
+                    edge.label.strip().lower(),
+                    target.strip().lower(),
+                )
+                if claim_key in seen_claims:
+                    continue
+                seen_claims.add(claim_key)
                 refs = [
                     SourceRef(ref_type="frame", ref_id=frame.frame_id, role="supports"),
                     *[
@@ -163,6 +179,76 @@ def _graph_relation_render_units(inp: LucidityInput) -> list[RenderUnit]:
                     )
                 )
                 index += 1
+    return units
+
+
+def _source_refs_from_ids(
+    refs: list[str],
+    *,
+    ref_type: str,
+    role: str = "supports",
+) -> list[SourceRef]:
+    return [
+        SourceRef(ref_type=ref_type, ref_id=ref, role=role)
+        for ref in refs
+        if str(ref).strip()
+    ]
+
+
+def _basin_relation_render_units(state: CandidateBasinState | None) -> list[RenderUnit]:
+    if state is None:
+        return []
+    payload = dict(state.quantized_payload)
+    relations = payload.get("relations") if isinstance(payload.get("relations"), list) else []
+    subject = str(payload.get("canonical_label") or payload.get("concept_id") or state.basin_id).strip()
+    if not subject:
+        return []
+    units: list[RenderUnit] = []
+    for index, relation in enumerate(relations):
+        if not isinstance(relation, dict):
+            continue
+        rel_name = str(relation.get("relation") or "").strip()
+        target = str(relation.get("target") or "").strip()
+        if not rel_name or not target:
+            continue
+        rel_sources = [
+            str(ref)
+            for ref in relation.get("source_refs") or state.source_refs
+            if str(ref).strip()
+        ]
+        refs = [
+            SourceRef(ref_type="basin", ref_id=state.basin_id, role="supports"),
+            *[
+                SourceRef(ref_type="source", ref_id=ref, role="supports")
+                for ref in rel_sources
+            ],
+        ]
+        if index < len(state.relation_handles):
+            refs.append(
+                SourceRef(
+                    ref_type="evidence",
+                    ref_id=state.relation_handles[index],
+                    role="supports",
+                )
+            )
+        units.append(
+            RenderUnit(
+                unit_id=f"basin-claim-{index}",
+                unit_type="claim",
+                scope_frame_id=state.scope_frame_ids[0] if state.scope_frame_ids else "",
+                text_intent="answer",
+                payload={
+                    "subject": subject,
+                    "relation": rel_name,
+                    "target": target,
+                    "basin_id": state.basin_id,
+                    "source": "basin_quantized_payload",
+                },
+                confidence=max(0.0, min(1.0, float(relation.get("confidence", state.energy)))),
+                required=True,
+                source_refs=refs,
+            )
+        )
     return units
 
 
@@ -245,13 +331,29 @@ def _committed_render_units(
     units: list[RenderUnit] = []
     frame_by_id = {frame.frame_id: frame for frame in inp.binding_output.candidate_frames}
     scoped = _frame_for_scope(inp.binding_output.candidate_frames, inp.context_op_output.context_frames)
-    graph_units = _graph_relation_render_units(inp)
-
-    if primary_basin_id:
-        state = next(
+    primary_state = (
+        next(
             (item for item in inp.basin_output.candidate_basin_states if item.basin_id == primary_basin_id),
             None,
         )
+        if primary_basin_id
+        else None
+    )
+    primary_payload = primary_state.quantized_payload if primary_state is not None else {}
+    primary_subject = ""
+    if isinstance(primary_payload, dict):
+        primary_subject = str(
+            primary_payload.get("concept_id") or primary_payload.get("canonical_label") or ""
+        )
+    graph_units = _graph_relation_render_units(inp, subject_filter=primary_subject)
+    basin_relation_units: list[RenderUnit] = []
+
+    if primary_basin_id:
+        state = primary_state
+        basin_refs = [SourceRef(ref_type="basin", ref_id=primary_basin_id, role="supports")]
+        if state is not None:
+            basin_refs.extend(_source_refs_from_ids(state.source_refs, ref_type="source"))
+            basin_refs.extend(_source_refs_from_ids(state.evidence_handles, ref_type="evidence"))
         units.append(
             RenderUnit(
                 unit_id="basin-primary",
@@ -264,17 +366,27 @@ def _committed_render_units(
                     "supporting_trace_ids": list(state.supporting_trace_ids) if state is not None else [],
                     "supporting_frame_ids": list(state.supporting_frame_ids) if state is not None else [],
                     "scope_frame_ids": list(state.scope_frame_ids) if state is not None else [],
+                    "evidence_handles": list(state.evidence_handles) if state is not None else [],
+                    "relation_handles": list(state.relation_handles) if state is not None else [],
+                    "source_refs": list(state.source_refs) if state is not None else [],
+                    "trust_score": state.trust_score if state is not None else 0.0,
+                    "heat_tier": state.heat_tier if state is not None else "",
+                    "quantized_payload": dict(state.quantized_payload) if state is not None else {},
                 },
                 confidence=state.energy if state is not None else 0.0,
                 required=not artifact and not frame_commits and not graph_units,
-                source_refs=[SourceRef(ref_type="basin", ref_id=primary_basin_id, role="supports")],
+                source_refs=basin_refs,
             )
         )
+        if state is not None and not graph_units:
+            basin_relation_units = _basin_relation_render_units(state)
+            units.extend(basin_relation_units)
 
     units.extend(graph_units)
+    has_relation_units = bool(graph_units or basin_relation_units)
 
     for index, commit in enumerate(frame_commits):
-        if graph_units:
+        if has_relation_units:
             continue
         frame = frame_by_id.get(commit.context_frame_id) or scoped.get(commit.context_frame_id)
         if frame is not None:

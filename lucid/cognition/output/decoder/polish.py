@@ -48,7 +48,8 @@ def polish_for_chat(
             cleaned = " ".join(parts[:max_sentences])
             sentence_refs = sentence_refs[:max_sentences]
 
-    if packet.render_constraints.tone == "careful" and "might" not in cleaned.lower():
+    lowered = cleaned.lower()
+    if packet.render_constraints.tone == "careful" and "might" not in lowered and "not confident" not in lowered:
         if packet.render_mode in {"uncertainty", "plural"} and cleaned.endswith("."):
             cleaned = cleaned[:-1] + ", though the reading is not fully settled."
 

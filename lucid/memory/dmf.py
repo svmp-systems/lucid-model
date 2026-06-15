@@ -21,7 +21,8 @@ from lucid.ir.dmf import (
 from lucid.cognition.reasoning.cue_routes import competing_cue_keys
 from lucid.memory.cue_match import best_affinity_for_cue
 from lucid.ir.serde import to_dict
-from lucid.runtime.paths import DEFAULT_AUDIT_DMF, resolve_train_path
+from lucid.runtime.paths import DEFAULT_AUDIT_DMF, resolve_checkpoint, resolve_train_path
+from lucid.training.checkpoint.slots import resolve_checkpoint_ref
 
 # DMF emits activated traces (capped by compute max_active_traces); lucidity decides winners.
 DMF_ACTIVATION_FLOOR_PERCENTILE = 0.05  # drop bottom 5% of scored activations (top ~95% band)
@@ -122,7 +123,8 @@ def trace_record_from_store(record: dict[str, object]) -> DmfTraceRecord:
 def tracebank_from_checkpoint(path: str | Path) -> list[DmfTraceRecord]:
     """Load tracebank rows from a Lucid checkpoint directory."""
 
-    store_path = Path(path) / "tracebank.json"
+    root = resolve_checkpoint(resolve_checkpoint_ref(path))
+    store_path = root / "tracebank.json"
     if not store_path.exists():
         return []
     store = json.loads(store_path.read_text(encoding="utf-8"))
@@ -141,7 +143,7 @@ def load_dynamic_memory_field(
 
     tracebank: list[DmfTraceRecord] = []
     if checkpoint:
-        root = Path(checkpoint)
+        root = resolve_checkpoint(resolve_checkpoint_ref(checkpoint))
         if root.exists():
             tracebank = tracebank_from_checkpoint(root)
     return DynamicMemoryField(tracebank=tracebank, audit_base_dir=audit_base_dir)

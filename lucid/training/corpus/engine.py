@@ -235,6 +235,7 @@ _recipes: dict[str, Recipe] | None = None
 def _load_recipes() -> dict[str, Recipe]:
     from lucid.training.corpus.recipes import (
         bank_destination,
+        chat_social,
         grid_move,
         grid_recolor,
         scoped_instruction,
@@ -243,6 +244,7 @@ def _load_recipes() -> dict[str, Recipe]:
 
     modules = (
         bank_destination,
+        chat_social,
         two_events,
         scoped_instruction,
         grid_move,

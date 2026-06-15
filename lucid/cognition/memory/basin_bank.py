@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lucid.runtime.paths import resolve_checkpoint
+from lucid.training.checkpoint.slots import resolve_checkpoint_ref
 from lucid.training.checkpoint.store import STORE_FILES
 
 _TOKEN_RE = re.compile(r"[^a-z0-9_]+")
@@ -18,6 +19,14 @@ class BasinBankRecord:
     basin_id: str
     family_hint: str = ""
     frame_affinities: dict[str, float] = field(default_factory=dict)
+    activation_signature: dict[str, float] = field(default_factory=dict)
+    semantic_signature: dict[str, float] = field(default_factory=dict)
+    evidence_handles: list[str] = field(default_factory=list)
+    relation_handles: list[str] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+    trust_score: float = 0.0
+    heat_tier: str = ""
+    quantized_payload: dict[str, object] = field(default_factory=dict)
     cooperation_links: dict[str, float] = field(default_factory=dict)
     suppression_links: dict[str, float] = field(default_factory=dict)
 
@@ -32,8 +41,28 @@ def normalize_family_hint(value: str) -> str:
     return clean
 
 
+def _float_map(raw: object, *, normalize_keys: bool = True) -> dict[str, float]:
+    rows = raw if isinstance(raw, dict) else {}
+    parsed: dict[str, float] = {}
+    for key, value in rows.items():
+        token = normalize_family_hint(str(key)) if normalize_keys else str(key)
+        if not token:
+            continue
+        try:
+            parsed[token] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return parsed
+
+
+def _string_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item)]
+
+
 def basin_bank_from_checkpoint(checkpoint: str | Path) -> list[BasinBankRecord]:
-    root = resolve_checkpoint(checkpoint)
+    root = resolve_checkpoint(resolve_checkpoint_ref(checkpoint))
     path = root / STORE_FILES["basin_bank"]
     if not path.exists():
         return []
@@ -45,26 +74,23 @@ def basin_bank_from_checkpoint(checkpoint: str | Path) -> list[BasinBankRecord]:
         basin_id = str(row.get("basin_id", "")).strip()
         if not basin_id:
             continue
-        affinities = {
-            str(key): float(value)
-            for key, value in dict(row.get("frame_affinities") or {}).items()
-            if str(key)
-        }
-        cooperation = {
-            str(key): float(value)
-            for key, value in dict(row.get("cooperation_links") or {}).items()
-            if str(key)
-        }
-        suppression = {
-            str(key): float(value)
-            for key, value in dict(row.get("suppression_links") or {}).items()
-            if str(key)
-        }
+        affinities = _float_map(row.get("frame_affinities"), normalize_keys=False)
+        cooperation = _float_map(row.get("cooperation_links"), normalize_keys=False)
+        suppression = _float_map(row.get("suppression_links"), normalize_keys=False)
+        quantized_payload = row.get("quantized_payload") if isinstance(row.get("quantized_payload"), dict) else {}
         records.append(
             BasinBankRecord(
                 basin_id=basin_id,
                 family_hint=str(row.get("family_hint", "")),
                 frame_affinities=affinities,
+                activation_signature=_float_map(row.get("activation_signature")),
+                semantic_signature=_float_map(row.get("semantic_signature")),
+                evidence_handles=_string_list(row.get("evidence_handles")),
+                relation_handles=_string_list(row.get("relation_handles")),
+                source_refs=_string_list(row.get("source_refs")),
+                trust_score=float(row.get("trust_score", 0.0) or 0.0),
+                heat_tier=str(row.get("heat_tier", "")),
+                quantized_payload=dict(quantized_payload),
                 cooperation_links=cooperation,
                 suppression_links=suppression,
             )
@@ -102,7 +128,7 @@ class BasinBank:
 def load_basin_bank(checkpoint: str | Path | None = None) -> BasinBank:
     if not checkpoint:
         return BasinBank()
-    root = resolve_checkpoint(checkpoint)
+    root = resolve_checkpoint(resolve_checkpoint_ref(checkpoint))
     if not root.exists():
         return BasinBank()
     return BasinBank(basin_bank_from_checkpoint(root))

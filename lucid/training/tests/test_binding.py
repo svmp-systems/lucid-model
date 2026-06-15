@@ -166,6 +166,7 @@ def test_binding_trainer_and_checkpoint(tmp_path: Path) -> None:
                 str(audit_dir),
                 "--steps",
                 "1",
+                "--allow-generator-gold",
             ]
         )
         == 0
@@ -183,6 +184,7 @@ def test_binding_trainer_and_checkpoint(tmp_path: Path) -> None:
                 str(audit_dir),
                 "--steps",
                 "1",
+                "--allow-generator-gold",
             ]
         )
         == 0
@@ -212,9 +214,31 @@ def test_orchestrator_binding_frames_after_train(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint"
     jsonl = tmp_path / "ep.jsonl"
     write_episodes([episode], jsonl)
-    lucid_main(["train", "dmf", "--episodes", str(jsonl), "--checkpoint", str(checkpoint), "--steps", "1"])
     lucid_main(
-        ["train", "binding", "--episodes", str(jsonl), "--checkpoint", str(checkpoint), "--steps", "1"]
+        [
+            "train",
+            "dmf",
+            "--episodes",
+            str(jsonl),
+            "--checkpoint",
+            str(checkpoint),
+            "--steps",
+            "1",
+            "--allow-generator-gold",
+        ]
+    )
+    lucid_main(
+        [
+            "train",
+            "binding",
+            "--episodes",
+            str(jsonl),
+            "--checkpoint",
+            str(checkpoint),
+            "--steps",
+            "1",
+            "--allow-generator-gold",
+        ]
     )
 
     runner = OrchestratorRunner(

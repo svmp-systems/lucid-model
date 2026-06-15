@@ -45,6 +45,22 @@ _REGION_FRAME_HINTS: dict[str, str] = {
 
 _DEPOSIT_SURFACES = frozenset({"placed", "deposited", "put", "stored", "left"})
 _LOCATION_SURFACES = frozenset({"bank", "vault", "safe", "river", "market"})
+_CONTEXTUAL_SINGLETONS = frozenset(
+    {
+        "algorithm",
+        "bit",
+        "circuit",
+        "computer",
+        "gate",
+        "hardware",
+        "mechanic",
+        "particle",
+        "processor",
+        "quantum",
+        "state",
+        "system",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -243,6 +259,7 @@ class BindingOperator:
             ranked_traces,
             slot_assignments,
             slot_evidence_refs,
+            slot_affinity_hints,
             unresolved,
             conflicting,
             dmf,
@@ -465,6 +482,10 @@ def _node_kind_for_unit(unit: CandidateUnit) -> str:
 
 def _matched_concepts(text: str, concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized_text = normalize_cue_key(text)
+    text_tokens = [token for token in normalized_text.split("_") if token]
+    contextual_singleton = (
+        len(text_tokens) == 1 and text_tokens[0] in _CONTEXTUAL_SINGLETONS
+    )
     matches: list[dict[str, Any]] = []
     for concept in concepts:
         terms = [concept.get("concept_id"), concept.get("id"), *(concept.get("terms") or [])]
@@ -473,7 +494,11 @@ def _matched_concepts(text: str, concepts: list[dict[str, Any]]) -> list[dict[st
             if not raw:
                 continue
             key = normalize_cue_key(raw)
-            if key and (key in normalized_text or normalized_text in key):
+            if not key:
+                continue
+            if contextual_singleton and key != normalized_text:
+                continue
+            if key in normalized_text or normalized_text in key:
                 matches.append(concept)
                 break
     return matches
@@ -1259,6 +1284,7 @@ def _frame_confidence(
     ranked_traces: list[tuple[str, float]],
     slot_assignments: dict[str, str],
     slot_evidence_refs: dict[str, list[str]],
+    slot_affinity_hints: dict[str, dict[str, float]],
     unresolved: list[str],
     conflicting: list[str],
     dmf: DmfOutput,
@@ -1275,6 +1301,10 @@ def _frame_confidence(
     if ranked_traces:
         base += 0.15 * ranked_traces[0][1]
     base += 0.1 * min(1.0, dmf.coverage_score)
+    if seed.source == "candidate_region" and slot_affinity_hints:
+        # Learned slot hints are evidence for a frame even when local trace
+        # competition deliberately leaves the slot unresolved.
+        base += min(0.14, 0.06 + 0.04 * len(slot_affinity_hints))
     base -= min(0.2, 0.05 * len(unresolved))
     base -= min(0.15, 0.05 * len(conflicting))
     if assigned_slots and unique_ratio < 1.0:

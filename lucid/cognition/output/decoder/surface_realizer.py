@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from lucid.cognition.output.decoder.phrases import humanize
+from lucid.cognition.output.decoder.fluent import realize_relation_group
 from lucid.cognition.output.decoder.realization_ops import RealizationOp, RealizationProgram
 from lucid.ir.expression import DecoderOutput, SentenceRef
 from lucid.ir.lucidity import RenderConstraints, SourceRef
@@ -76,6 +77,14 @@ def _realize_claim(payload: dict) -> str:
     bank = _realize_bank_sense(payload)
     if bank:
         return bank
+    subject = str(payload.get("subject") or "").strip()
+    relation = str(payload.get("relation") or "").strip()
+    target = payload.get("target")
+    if subject and relation and target is not None:
+        targets = target if isinstance(target, list) else [target]
+        text = realize_relation_group(subject, relation, [str(item) for item in targets if str(item).strip()])
+        if text:
+            return text.rstrip(".")
     summary = _realize_summary(payload)
     if summary:
         return summary

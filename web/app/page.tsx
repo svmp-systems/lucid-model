@@ -22,6 +22,17 @@ function shortTitle(text: string) {
   return clean.length > 34 ? `${clean.slice(0, 34).trim()}...` : clean || "Untitled session";
 }
 
+function formatUpdatedAt(value?: string) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 function loadCheckpointPrefs(): Record<string, string> {
   if (typeof window === "undefined") {
     return {};
@@ -378,7 +389,10 @@ export default function Home() {
                     <MessageCircle size={18} strokeWidth={1.8} />
                     <span>
                       <strong>{session.title}</strong>
-                      <small>{session.checkpointVersion}</small>
+                      <small>
+                        {session.checkpointVersion}
+                        {formatUpdatedAt(session.updatedAt) ? ` · ${formatUpdatedAt(session.updatedAt)}` : ""}
+                      </small>
                     </span>
                   </button>
                   <button

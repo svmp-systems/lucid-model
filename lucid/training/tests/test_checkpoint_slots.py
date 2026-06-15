@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from lucid.cognition.memory.basin_bank import basin_bank_from_checkpoint, load_basin_bank
+from lucid.memory.dmf import load_dynamic_memory_field, tracebank_from_checkpoint
 from lucid.runtime.paths import (
     DEFAULT_LOADED_CHECKPOINT,
     DEFAULT_TRAINING_CHECKPOINT,
@@ -67,6 +69,35 @@ def test_inference_uses_loaded_when_set() -> None:
     assert resolve_inference_checkpoint("") == DEFAULT_LOADED_CHECKPOINT
     assert resolve_inference_checkpoint("", cold=True) is None
     assert resolve_inference_checkpoint("checkpoints/training") == "checkpoints/training"
+
+
+def test_runtime_memory_loaders_resolve_loaded_alias() -> None:
+    training = resolve_checkpoint(DEFAULT_TRAINING_CHECKPOINT)
+    state = empty_checkpoint("runtime-alias")
+    state.ensure_store("tracebank")["records"] = [
+        {
+            "trace_id": "trace_qubit",
+            "alias": "qubit",
+            "cue_affinities": {"qubit": 1.0},
+        }
+    ]
+    state.ensure_store("basin_bank")["records"] = [
+        {
+            "basin_id": "basin_qubit",
+            "family_hint": "quantum",
+            "activation_signature": {"qubit": 1.0},
+            "trust_score": 1.0,
+        }
+    ]
+    save_checkpoint(state, training)
+    promote_to_loaded(training)
+
+    assert [trace.trace_id for trace in tracebank_from_checkpoint("loaded")] == ["trace_qubit"]
+    assert [trace.trace_id for trace in load_dynamic_memory_field("loaded").tracebank] == [
+        "trace_qubit"
+    ]
+    assert [record.basin_id for record in basin_bank_from_checkpoint("loaded")] == ["basin_qubit"]
+    assert [record.basin_id for record in load_basin_bank("loaded").records] == ["basin_qubit"]
 
 
 def test_save_named_snapshot_without_loading() -> None:
