@@ -197,6 +197,116 @@ def test_source_backed_mature_basin_can_commit_with_local_binding_noise() -> Non
     assert out.committed_state.primary_basin_id == "b_qubit_definition"
 
 
+def test_source_backed_top_scope_ignores_peripheral_duplicate_basin_conflicts() -> None:
+    inp = LucidityInput(
+        basin_output=BasinOutput(
+            candidate_basin_states=[
+                CandidateBasinState(
+                    basin_id="b_quantum_computing_definition",
+                    energy=0.7,
+                    supporting_trace_ids=["t_term_quantum_computing"],
+                    scope_frame_ids=["cf_quantum_computing"],
+                    coherence_score=0.82,
+                    source_refs=["aws_quantum_computing"],
+                    heat_tier="warm",
+                    quantized_payload={
+                        "canonical_label": "quantum computing",
+                        "relations": [
+                            {
+                                "relation": "type_of",
+                                "target": "multidisciplinary field using quantum mechanics",
+                                "confidence": 0.86,
+                                "source_refs": ["aws_quantum_computing"],
+                            }
+                        ],
+                    },
+                ),
+                CandidateBasinState(
+                    basin_id="b_quantum_computing_definition",
+                    energy=0.66,
+                    supporting_trace_ids=["t_claim_quantum_circuit"],
+                    scope_frame_ids=["cf_quantum_circuit"],
+                    coherence_score=0.82,
+                    source_refs=["aws_quantum_computing"],
+                    heat_tier="warm",
+                ),
+                CandidateBasinState(
+                    basin_id="b_quantum_circuit_definition",
+                    energy=0.64,
+                    supporting_trace_ids=["t_claim_quantum_circuit"],
+                    scope_frame_ids=["cf_quantum_circuit"],
+                    coherence_score=0.82,
+                    source_refs=["ibm_quantum_circuit"],
+                    heat_tier="warm",
+                ),
+            ],
+            competition_summary=CompetitionSummary(
+                top_basin_id="b_quantum_computing_definition",
+                second_basin_id="b_quantum_computing_mechanism",
+                top_margin=0.05,
+                active_basin_count=3,
+            ),
+            unresolved_conflicts=[
+                BasinConflict(
+                    scope_frame_id="cf_quantum_computing",
+                    conflict_type="low_margin_competition",
+                    basin_ids=[
+                        "b_quantum_computing_definition",
+                        "b_quantum_computing_mechanism",
+                    ],
+                ),
+                BasinConflict(
+                    scope_frame_id="cf_quantum_circuit",
+                    conflict_type="low_margin_competition",
+                    basin_ids=[
+                        "b_quantum_computing_definition",
+                        "b_quantum_circuit_definition",
+                    ],
+                ),
+            ],
+        ),
+        binding_output=BindingOutput(
+            candidate_frames=[
+                CandidateFrame(
+                    frame_id="local_quantum_computing",
+                    frame_type="local_reading",
+                    confidence=0.7,
+                    role_assignments={"slot_00": "t_term_quantum_computing"},
+                ),
+                CandidateFrame(
+                    frame_id="local_quantum_circuit",
+                    frame_type="local_reading",
+                    confidence=0.7,
+                    role_assignments={"slot_00": "t_claim_quantum_circuit"},
+                ),
+            ],
+            binding_stability_score=0.43,
+        ),
+        context_op_output=ContextOpOutput(),
+        interference_output=InterferenceOutput(),
+        dmf_output=DmfOutput(
+            active_traces=[
+                ActiveTrace("t_term_quantum_computing", 0.69, heat_tier="warm"),
+                ActiveTrace("t_claim_quantum_circuit", 0.52, heat_tier="warm"),
+            ],
+            coverage_score=0.75,
+        ),
+        perceptual_evidence_graph=PerceptualEvidenceGraph(),
+        task_intent="chat",
+    )
+
+    checks, _ = run_checks(inp, LucidityConfig())
+    assert checks.contradiction_check is not None
+    assert checks.contradiction_check.passed is True
+    assert checks.contradiction_check.details["ignored_basin_conflict_count"] == 2
+
+    out = run_lucidity(inp)
+
+    assert out.decision == LucidityDecision.COMMIT
+    assert out.committed_state is not None
+    assert out.committed_state.primary_basin_id == "b_quantum_computing_definition"
+
+
 def test_low_margin_preserves_ambiguity() -> None:
     out = run_lucidity(_bank_lucidity_input())
     assert out.decision == LucidityDecision.PRESERVE_AMBIGUITY
@@ -334,3 +444,101 @@ def test_orchestrator_grid_pipeline_with_lucidity_gate(tmp_path) -> None:
     checks = run.lucidity_output.check_results
     assert checks.projection_fit_check is not None
     assert checks.projection_fit_check.passed
+
+
+def test_definition_basin_render_units_pick_one_source() -> None:
+    from lucid.cognition.output.lucidity.commit import _definition_basin_render_units
+    from lucid.ir.basins import CandidateBasinState
+
+    state = CandidateBasinState(
+        basin_id="b_quantum_computing_definition",
+        energy=0.7,
+        source_refs=["aws_quantum_computing", "ibm_quantum_computing"],
+        quantized_payload={
+            "concept_id": "quantum_computing",
+            "canonical_label": "quantum computing",
+            "relations": [
+                {
+                    "relation": "type_of",
+                    "target": "multidisciplinary field using quantum mechanics",
+                    "confidence": 0.9,
+                    "source_refs": ["aws_quantum_computing"],
+                },
+                {
+                    "relation": "type_of",
+                    "target": "a wafer not much bigger than a laptop chip",
+                    "confidence": 0.95,
+                    "source_refs": ["ibm_quantum_computing"],
+                },
+                {
+                    "relation": "property",
+                    "target": "still under development",
+                    "confidence": 0.8,
+                    "source_refs": ["aws_quantum_computing"],
+                },
+                {
+                    "relation": "type_of",
+                    "target": "Join now Case studies IBM Quantum",
+                    "confidence": 0.99,
+                    "source_refs": ["ibm_quantum_computing"],
+                },
+            ],
+        },
+    )
+
+    units = _definition_basin_render_units(state)
+    targets = [str(unit.payload.get("target") or "") for unit in units]
+
+    assert len(units) <= 3
+    assert any("multidisciplinary field" in target for target in targets)
+    assert not any("wafer" in target for target in targets)
+    assert not any("join now" in target.lower() for target in targets)
+
+
+def test_definition_basin_render_units_pick_one_source() -> None:
+    from lucid.cognition.output.lucidity.commit import _definition_basin_render_units
+    from lucid.ir.basins import CandidateBasinState
+
+    state = CandidateBasinState(
+        basin_id="b_quantum_computing_definition",
+        energy=0.7,
+        source_refs=["aws_quantum_computing", "ibm_quantum_computing"],
+        quantized_payload={
+            "concept_id": "quantum_computing",
+            "canonical_label": "quantum computing",
+            "relations": [
+                {
+                    "relation": "type_of",
+                    "target": "multidisciplinary field using quantum mechanics",
+                    "confidence": 0.9,
+                    "source_refs": ["aws_quantum_computing"],
+                },
+                {
+                    "relation": "type_of",
+                    "target": "a wafer not much bigger than a laptop chip",
+                    "confidence": 0.95,
+                    "source_refs": ["ibm_quantum_computing"],
+                },
+                {
+                    "relation": "property",
+                    "target": "still under development",
+                    "confidence": 0.8,
+                    "source_refs": ["aws_quantum_computing"],
+                },
+                {
+                    "relation": "type_of",
+                    "target": "Join now Case studies IBM Quantum",
+                    "confidence": 0.99,
+                    "source_refs": ["ibm_quantum_computing"],
+                },
+            ],
+        },
+    )
+
+    units = _definition_basin_render_units(state)
+    targets = [str(unit.payload.get("target") or "") for unit in units]
+
+    assert len(units) <= 3
+    assert any("multidisciplinary field" in target for target in targets)
+    assert not any("wafer" in target for target in targets)
+    assert not any("join now" in target.lower() for target in targets)

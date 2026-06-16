@@ -139,14 +139,23 @@ def save_checkpoint(
     for name in STORE_FILES:
         state.ensure_store(name)
 
+    previous_hashes = dict(state.manifest.get("store_hashes", {}))
     store_hashes: dict[str, str] = {}
+    store_bytes: dict[str, int] = {}
+    changed_stores: list[str] = []
+    written_store_bytes = 0
     for name, file_name in STORE_FILES.items():
         payload = state.stores[name]
-        (root / file_name).write_text(
-            json.dumps(payload, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        store_hashes[name] = content_hash(payload)
+        payload_text = json.dumps(payload, indent=2, sort_keys=True)
+        payload_bytes = len(payload_text.encode("utf-8"))
+        store_bytes[name] = payload_bytes
+        store_hash = content_hash(payload)
+        store_hashes[name] = store_hash
+        store_path = root / file_name
+        if previous_hashes.get(name) != store_hash or not store_path.exists():
+            store_path.write_text(payload_text, encoding="utf-8")
+            changed_stores.append(name)
+            written_store_bytes += payload_bytes
 
     manifest = dict(state.manifest)
     manifest.setdefault("schema_version", 1)
@@ -155,6 +164,15 @@ def save_checkpoint(
     manifest["updated_at"] = _utc_now_iso()
     manifest["store_files"] = STORE_FILES
     manifest["store_hashes"] = store_hashes
+    manifest["checkpoint_scale_metrics"] = {
+        "changed_store_count": len(changed_stores),
+        "unchanged_store_count": len(STORE_FILES) - len(changed_stores),
+        "changed_stores": changed_stores,
+        "store_bytes": store_bytes,
+        "total_store_bytes": sum(store_bytes.values()),
+        "written_store_bytes": written_store_bytes,
+        "rewrite_policy": "skip_unchanged_json_stores",
+    }
     manifest["training_steps"] = int(manifest.get("training_steps", 0)) + max(0, step_delta)
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
@@ -162,6 +180,35 @@ def save_checkpoint(
     )
     state.manifest = manifest
     return manifest_path
+
+
+def _metadata_lifecycle_counts(state: CheckpointState) -> dict[str, Any]:
+    objects = state.ensure_store("learned_metadata").get("objects", {})
+    heat_tiers: dict[str, int] = {}
+    object_types: dict[str, int] = {}
+    quantization_candidates = 0
+    if not isinstance(objects, dict):
+        return {
+            "objects": 0,
+            "heat_tiers": {},
+            "object_types": {},
+            "quantization_candidates": 0,
+        }
+    for record in objects.values():
+        if not isinstance(record, dict):
+            continue
+        tier = str(record.get("heat_tier") or "quarantine")
+        object_type = str(record.get("object_type") or "unknown")
+        heat_tiers[tier] = heat_tiers.get(tier, 0) + 1
+        object_types[object_type] = object_types.get(object_type, 0) + 1
+        if bool(record.get("quantization_candidate")):
+            quantization_candidates += 1
+    return {
+        "objects": len(objects),
+        "heat_tiers": dict(sorted(heat_tiers.items())),
+        "object_types": dict(sorted(object_types.items())),
+        "quantization_candidates": quantization_candidates,
+    }
 
 
 def checkpoint_summary(state: CheckpointState) -> dict[str, Any]:
@@ -190,5 +237,7 @@ def checkpoint_summary(state: CheckpointState) -> dict[str, Any]:
             "cue_feature_keys": len(state.ensure_store("cue_encoder_map").get("feature_index", {})),
             "projector_examples": len(state.ensure_store("projector_examples").get("examples", [])),
         },
+        "metadata_lifecycle": _metadata_lifecycle_counts(state),
+        "checkpoint_scale_metrics": dict(state.manifest.get("checkpoint_scale_metrics", {})),
         "training_steps": int(state.manifest.get("training_steps", 0)),
     }

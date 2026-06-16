@@ -74,6 +74,8 @@ export default function Home() {
   ]);
   const [auditOpen, setAuditOpen] = useState(false);
   const [selectedAuditId, setSelectedAuditId] = useState<string>("");
+  const [auditContent, setAuditContent] = useState("");
+  const [auditLoading, setAuditLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const reloadSessions = useCallback(async (prefs: Record<string, string>) => {
@@ -141,15 +143,56 @@ export default function Home() {
 
   const selectedAudit = useMemo(() => {
     const messages = activeSession?.messages || [];
-    return (
-      messages.find((message) => message.id === selectedAuditId && message.auditLog) ||
-      [...messages].reverse().find((message) => message.auditLog || message.runAuditDir)
-    );
+    if (selectedAuditId) {
+      const chosen = messages.find((message) => message.id === selectedAuditId);
+      if (chosen && (chosen.auditLog || chosen.runAuditDir)) {
+        return chosen;
+      }
+    }
+    return [...messages].reverse().find((message) => message.auditLog || message.runAuditDir);
   }, [activeSession, selectedAuditId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [activeSession?.messages.length]);
+
+  useEffect(() => {
+    const runDir = selectedAudit?.runAuditDir;
+    if (!auditOpen || !runDir) {
+      setAuditContent("");
+      setAuditLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAuditLoading(true);
+    setAuditContent("");
+
+    fetch(`/api/audit?runDir=${encodeURIComponent(runDir)}`)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Failed to load audit log");
+        }
+        const data = (await response.json()) as { auditLog?: string };
+        if (!cancelled) {
+          setAuditContent(data.auditLog || "");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuditContent("Could not load the audit log for this turn.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuditLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [auditOpen, selectedAudit?.runAuditDir, selectedAuditId]);
 
   function updateSession(nextSession: ChatSession) {
     setSessions((current) =>
@@ -183,7 +226,18 @@ export default function Home() {
     }
   }
 
-  function deleteSession(sessionId: string) {
+  async function deleteSession(sessionId: string) {
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        throw new Error("Failed to delete session");
+      }
+    } catch {
+      return;
+    }
+
     const remaining = sessions.filter((session) => session.id !== sessionId);
     const nextPrefs = { ...checkpointPrefs };
     delete nextPrefs[sessionId];
@@ -399,7 +453,7 @@ export default function Home() {
                     aria-label={`Delete ${session.title}`}
                     className="delete-session"
                     type="button"
-                    onClick={() => deleteSession(session.id)}
+                    onClick={() => void deleteSession(session.id)}
                   >
                     <Trash2 size={16} strokeWidth={1.8} />
                   </button>
@@ -509,7 +563,11 @@ export default function Home() {
               Close
             </button>
           </div>
-          <pre>{selectedAudit?.auditLog || "Run a turn, then open its audit here."}</pre>
+          <pre>
+            {auditLoading
+              ? "Loading audit log..."
+              : auditContent || selectedAudit?.auditLog || "Run a turn, then open its audit here."}
+          </pre>
         </aside>
       </div>
     </main>

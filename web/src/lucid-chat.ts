@@ -220,11 +220,9 @@ export async function enrichChatTurnResponse(result: ChatTurnResponse): Promise<
     return result;
   }
 
-  const auditLog = result.auditLog || (await loadRunAuditSummary(runAuditDir));
-  const lucidityDecision = result.lucidityDecision || extractLucidityDecision(auditLog);
+  const lucidityDecision = result.lucidityDecision || (await loadLucidityDecision(runAuditDir));
   return {
     ...result,
-    auditLog,
     lucidityDecision
   };
 }
@@ -240,6 +238,10 @@ export async function startLocalSession(sessionId?: string) {
     throw new Error(stderr || "chat start returned no session id");
   }
   return id;
+}
+
+export async function deleteLocalSession(sessionId: string) {
+  await runLucidCli(["chat", "delete", "--session-id", sessionId, "--audit-dir", chatAuditDir()]);
 }
 
 export async function listLocalChatSessionIds() {
@@ -306,7 +308,7 @@ export async function loadLocalChatSession(
 ): Promise<ServerChatSession> {
   const record = await loadLocalSessionRecord(sessionId);
   const turns = Array.isArray(record?.turns) ? record.turns : [];
-  const messages = await enrichSessionMessages(turnsToMessages(turns, checkpointVersion));
+  const messages = turnsToMessages(turns, checkpointVersion);
   const firstUser = turns.find((turn) => String(turn.user_input || "").trim())?.user_input || "";
   return {
     id: sessionId,
@@ -316,22 +318,6 @@ export async function loadLocalChatSession(
     updatedAt: await sessionUpdatedAt(sessionId),
     messages
   };
-}
-
-async function enrichSessionMessages(messages: ChatMessage[]): Promise<ChatMessage[]> {
-  return Promise.all(
-    messages.map(async (message) => {
-      if (message.role !== "assistant" || message.auditLog || !message.runAuditDir) {
-        return message;
-      }
-      const auditLog = await loadRunAuditSummary(message.runAuditDir);
-      return {
-        ...message,
-        auditLog,
-        lucidityDecision: message.lucidityDecision || extractLucidityDecision(auditLog)
-      };
-    })
-  );
 }
 
 export async function listLocalChatSessions(
@@ -354,28 +340,64 @@ export async function listLocalChatSessions(
   });
 }
 
-async function loadRunAuditSummary(runAuditDir: string) {
+function resolveRunAuditDir(runAuditDir: string) {
+  const text = runAuditDir.trim();
+  if (!text) {
+    return "";
+  }
+  return path.isAbsolute(text) ? path.resolve(text) : path.resolve(trainRoot(), text.replace(/\\/g, "/"));
+}
+
+function isAllowedRunAuditDir(resolved: string) {
+  const train = path.resolve(trainRoot());
+  const normalized = path.resolve(resolved);
+  return normalized === train || normalized.startsWith(`${train}${path.sep}`);
+}
+
+export async function loadRunAuditLog(runAuditDir: string) {
+  const resolved = resolveRunAuditDir(runAuditDir);
+  if (!resolved || !isAllowedRunAuditDir(resolved)) {
+    return "";
+  }
+
   try {
-    const manifestPath = path.join(runAuditDir, "manifest.json");
-    const raw = await readFile(manifestPath, "utf-8");
-    const manifest = JSON.parse(raw) as {
-      summary?: { headline?: string; lines?: string[] };
-      lucidity_decision?: string;
-    };
-    const summary = manifest.summary;
-    if (summary?.lines?.length) {
-      return [summary.headline || "", ...summary.lines].filter(Boolean).join("\n");
-    }
-    return JSON.stringify(manifest, null, 2);
+    const manifestPath = path.join(resolved, "manifest.json");
+    await readFile(manifestPath, "utf-8");
   } catch {
     return "";
   }
+
+  try {
+    const { stdout } = await runLucidCli(["inspect", resolved]);
+    return stdout.trim();
+  } catch {
+    return loadRunAuditFallback(resolved);
+  }
 }
 
-function extractLucidityDecision(auditLog: string) {
-  const headline = auditLog.split("\n")[0]?.trim() || "";
-  const match = headline.match(/^(\w+)\s·/);
-  return match?.[1] || "";
+async function loadRunAuditFallback(runDir: string) {
+  for (const fileName of ["narrative.txt", "report.txt"]) {
+    try {
+      const text = await readFile(path.join(runDir, fileName), "utf-8");
+      if (text.trim()) {
+        return text.trim();
+      }
+    } catch {
+      // try next fallback
+    }
+  }
+  return "";
+}
+
+async function loadLucidityDecision(runAuditDir: string) {
+  try {
+    const manifestPath = path.join(resolveRunAuditDir(runAuditDir), "manifest.json");
+    const raw = await readFile(manifestPath, "utf-8");
+    const manifest = JSON.parse(raw) as { lucidity_decision?: string };
+    return typeof manifest.lucidity_decision === "string" ? manifest.lucidity_decision : "";
+  } catch {
+    return "";
+  }
 }
 
 export async function listLocalCheckpoints() {

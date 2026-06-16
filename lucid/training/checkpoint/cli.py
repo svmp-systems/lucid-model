@@ -6,6 +6,10 @@ import argparse
 import json
 import sys
 
+from lucid.training.checkpoint.metadata import (
+    archive_stale_quarantine,
+    summarize_metadata_lifecycle,
+)
 from lucid.training.checkpoint.registry import list_registry
 from lucid.training.checkpoint.slots import (
     archive_training_checkpoint,
@@ -14,8 +18,10 @@ from lucid.training.checkpoint.slots import (
     list_named_saves,
     promote_to_loaded,
     read_loaded_pointer,
+    resolve_checkpoint_ref,
     save_training_snapshot,
 )
+from lucid.training.checkpoint.store import load_checkpoint, save_checkpoint
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
@@ -94,6 +100,42 @@ def _cmd_list(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lifecycle(args: argparse.Namespace) -> int:
+    checkpoint = resolve_checkpoint_ref(args.checkpoint)
+    state = load_checkpoint(checkpoint, create=False)
+    before = summarize_metadata_lifecycle(
+        state,
+        stale_quarantine_days=args.max_age_days,
+    )
+    archived: list[dict[str, object]] = []
+    if args.archive_stale:
+        archived = archive_stale_quarantine(
+            state,
+            max_age_days=args.max_age_days,
+        )
+        if archived:
+            save_checkpoint(state, checkpoint, force=True)
+    after = summarize_metadata_lifecycle(
+        state,
+        stale_quarantine_days=args.max_age_days,
+    )
+    print(
+        json.dumps(
+            {
+                "checkpoint": args.checkpoint,
+                "resolved_checkpoint": checkpoint,
+                "before": before,
+                "after": after,
+                "archived": archived,
+                "archive_stale": args.archive_stale,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lucid checkpoint")
     sub = parser.add_subparsers(dest="action", required=True)
@@ -139,6 +181,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="List standard cp_NNN saves and other archives").set_defaults(
         func=_cmd_list
     )
+
+    lifecycle_p = sub.add_parser(
+        "lifecycle",
+        help="Summarize learned metadata heat tiers and optionally archive stale quarantine",
+    )
+    lifecycle_p.add_argument("--checkpoint", default="training")
+    lifecycle_p.add_argument("--max-age-days", type=int, default=30)
+    lifecycle_p.add_argument("--archive-stale", action="store_true")
+    lifecycle_p.set_defaults(func=_cmd_lifecycle)
     return parser
 
 

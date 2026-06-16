@@ -16,7 +16,7 @@ from lucid.audit.smoke import (
     write_lucidity_audit,
 )
 from lucid.audit.chat import load_session_memory, new_session_memory, save_session_memory
-from lucid.chat import list_sessions, run_chat_turn, start_session
+from lucid.chat import delete_session, list_sessions, run_chat_turn, start_session
 from lucid.cognition.output.decoder import run_decoder
 from lucid.cognition.output.lucidity import run_lucidity
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
@@ -967,6 +967,38 @@ def _cmd_scaling_path(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ingest_train(args: argparse.Namespace) -> int:
+    from lucid.training.scale_ingest import train_scale_ingest
+
+    print(
+        json.dumps(
+            train_scale_ingest(
+                args.checkpoint,
+                pin_loaded=args.pin_loaded,
+                write_audit=not args.no_audit,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_ingest_audit(args: argparse.Namespace) -> int:
+    from lucid.training.scale_ingest import audit_ingest_from_articles
+
+    print(json.dumps(audit_ingest_from_articles(), indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_ingest_crosstalk(args: argparse.Namespace) -> int:
+    from lucid.training.scale_ingest import run_crosstalk_smoke
+
+    result = run_crosstalk_smoke()
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("crosstalk_pass") else 1
+
+
 def _cmd_chat_start(args: argparse.Namespace) -> int:
     try:
         session_id = start_session(session_id=args.session_id or None, audit_dir=args.audit_dir)
@@ -1005,6 +1037,15 @@ def _cmd_chat_list(args: argparse.Namespace) -> int:
     try:
         for session_id in list_sessions(audit_dir=args.audit_dir):
             print(session_id)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def _cmd_chat_delete(args: argparse.Namespace) -> int:
+    try:
+        delete_session(session_id=args.session_id, audit_dir=args.audit_dir)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1348,6 +1389,21 @@ def _build_parser() -> argparse.ArgumentParser:
     scaling_path = scaling_sub.add_parser("path", help="Print points.jsonl path")
     scaling_path.set_defaults(func=_cmd_scaling_path)
 
+    ingest_parser = sub.add_parser("ingest", help="Source ingest learning pipeline")
+    ingest_sub = ingest_parser.add_subparsers(dest="ingest_cmd", required=True)
+
+    ingest_train = ingest_sub.add_parser("train", help="Run scale-style article ingest into a checkpoint")
+    ingest_train.add_argument("--checkpoint", default="checkpoints/saves/v.0.2")
+    ingest_train.add_argument("--pin-loaded", action="store_true")
+    ingest_train.add_argument("--no-audit", action="store_true")
+    ingest_train.set_defaults(func=_cmd_ingest_train)
+
+    ingest_audit = ingest_sub.add_parser("audit", help="Dry-run ingest audit report without saving checkpoint")
+    ingest_audit.set_defaults(func=_cmd_ingest_audit)
+
+    ingest_crosstalk = ingest_sub.add_parser("crosstalk", help="Run synthetic crosstalk smoke from learning.md")
+    ingest_crosstalk.set_defaults(func=_cmd_ingest_crosstalk)
+
     chat_parser = sub.add_parser("chat", help="Run audited session chat turns")
     chat_sub = chat_parser.add_subparsers(dest="chat_cmd", required=True)
 
@@ -1374,6 +1430,11 @@ def _build_parser() -> argparse.ArgumentParser:
     chat_list = chat_sub.add_parser("list", help="List chat sessions under the audit directory")
     chat_list.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
     chat_list.set_defaults(func=_cmd_chat_list)
+
+    chat_delete = chat_sub.add_parser("delete", help="Delete one chat session and its audit files")
+    chat_delete.add_argument("--session-id", required=True, help="Session id to delete")
+    chat_delete.add_argument("--audit-dir", default="audit/chat", help="Chat audit base directory")
+    chat_delete.set_defaults(func=_cmd_chat_delete)
 
     chat_memory = chat_sub.add_parser("memory", help="Print one session's chat memory audit")
     chat_memory.add_argument("--session-id", required=True, help="Session id from lucid chat start")
@@ -1408,6 +1469,7 @@ _KNOWN_COMMANDS = frozenset(
         "inspect",
         "gen",
         "scaling",
+        "ingest",
         "chat",
     }
 )

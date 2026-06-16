@@ -12,7 +12,7 @@ from lucid.cognition.reasoning.interference import (
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.cognition.reasoning.interference import run_interference
 from lucid.ir.binding import CandidateFrame
-from lucid.ir.context_op import ContextOpInput
+from lucid.ir.context_op import ContextFrame, ContextOpInput, InterferenceGate
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfOutput
 from lucid.ir.interference import InterferenceInput, LearnedInterferenceLink
 from lucid.ir.perception import CandidateUnit, PerceptualEvidenceGraph, ReferenceHint
@@ -117,6 +117,53 @@ def test_interference_builds_local_support_and_conflict_pressure() -> None:
     assert any(edge.delta > 0 and edge.scope_frame_id == "cf_event_two" for edge in out.trace_trace_edges)
     assert any(edge.basin_id == "b_event_frame" for edge in out.frame_basin_edges)
     assert any(delta.scope_frame_id == "cf_event_two" for delta in out.scoped_basin_energy_deltas)
+
+
+def test_interference_does_not_turn_supporting_trace_into_frame_conflict() -> None:
+    frame = CandidateFrame(
+        frame_id="local_quantum_computing",
+        frame_type="local_reading",
+        role_assignments={"slot_00": "t_term_quantum_computing"},
+        supporting_trace_ids=["t_term_quantum_computing"],
+        conflicting_trace_ids=["t_term_quantum_computing", "t_claim_quantum_circuit"],
+        confidence=0.72,
+    )
+    out = run_interference(
+        InterferenceInput(
+            context_frames=[
+                ContextFrame(
+                    context_frame_id="cf_quantum_computing",
+                    member_frame_ids=["local_quantum_computing"],
+                )
+            ],
+            candidate_frames=[frame],
+            dmf_output=DmfOutput(
+                active_traces=[
+                    ActiveTrace("t_term_quantum_computing", 0.69),
+                    ActiveTrace("t_claim_quantum_circuit", 0.52),
+                ]
+            ),
+            interference_gates=[
+                InterferenceGate(
+                    gate_id="gate_quantum_computing",
+                    scope_frame_id="cf_quantum_computing",
+                    allowed_trace_ids=["t_term_quantum_computing"],
+                )
+            ],
+        )
+    )
+
+    assert any(
+        edge.trace_id == "t_term_quantum_computing"
+        and edge.frame_id == "local_quantum_computing"
+        and edge.delta > 0
+        for edge in out.trace_frame_edges
+    )
+    assert not any(
+        report.conflict_type == "trace_frame_conflict"
+        and "t_term_quantum_computing" in report.members
+        for report in out.conflict_reports
+    )
 
 
 def test_interference_audit_summary_is_human_readable() -> None:

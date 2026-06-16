@@ -137,6 +137,9 @@ def check_faithfulness(
     unsupported = 0
     omitted: list[str] = []
 
+    if re.search(r"\bis an?\s+(?:exploring|using|building|developing|creating)\b", surface_text, re.I):
+        violations.append("gerund_definition_surface")
+
     required_ids = {unit.unit_id for unit in packet.approved_units if unit.required}
     covered_ids: set[str] = set()
     for ref in sentence_refs:

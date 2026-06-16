@@ -157,12 +157,20 @@ def _basin_root(basin_id: str) -> str:
 
 def _blocking_basin_conflict_count(basins: BasinOutput) -> tuple[int, int]:
     top_id = basins.competition_summary.top_basin_id
+    top = next(
+        (state for state in basins.candidate_basin_states if state.basin_id == top_id),
+        None,
+    )
+    top_scope_ids = set(top.scope_frame_ids if top is not None else [])
     blocking = 0
     ignored = 0
     for conflict in basins.unresolved_conflicts:
         ids = [basin_id for basin_id in conflict.basin_ids if basin_id]
         if conflict.conflict_type == "low_margin_competition":
             if top_id and top_id not in ids:
+                ignored += 1
+                continue
+            if top_scope_ids and conflict.scope_frame_id not in top_scope_ids:
                 ignored += 1
                 continue
             roots = {_basin_root(basin_id) for basin_id in ids if _basin_root(basin_id)}

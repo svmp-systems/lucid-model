@@ -193,11 +193,20 @@ class InterferenceOperator:
         frame_scores: dict[str, float] = {}
         for frame in frames:
             support_values: list[float] = []
-            for trace_id in _frame_trace_ids(frame):
+            support_ids = set(_frame_support_trace_ids(frame))
+            conflict_ids = set(frame.conflicting_trace_ids) - support_ids
+            for trace_id in sorted(support_ids):
                 if trace_id in blocked or trace_id not in allowed:
                     continue
                 value = _round(_activation(trace_id, active) * max(0.05, frame.confidence))
-                if trace_id in frame.conflicting_trace_ids:
+                out.trace_frame_edges.append(TraceFrameEdge(trace_id, frame.frame_id, value))
+                support_values.append(value)
+
+            for trace_id in sorted(conflict_ids):
+                if trace_id in blocked or trace_id not in allowed:
+                    continue
+                value = _round(_activation(trace_id, active) * max(0.05, frame.confidence))
+                if value > 0:
                     out.trace_frame_edges.append(TraceFrameEdge(trace_id, frame.frame_id, -value))
                     out.conflict_reports.append(
                         ConflictReport(
@@ -207,9 +216,6 @@ class InterferenceOperator:
                             severity=value,
                         )
                     )
-                else:
-                    out.trace_frame_edges.append(TraceFrameEdge(trace_id, frame.frame_id, value))
-                    support_values.append(value)
 
             if support_values:
                 frame_scores[frame.frame_id] = _round(sum(support_values) / len(support_values))
@@ -378,12 +384,11 @@ def _clusters_by_trace(clusters: list[TraceCluster]) -> dict[str, TraceCluster]:
     return out
 
 
-def _frame_trace_ids(frame: CandidateFrame) -> list[str]:
+def _frame_support_trace_ids(frame: CandidateFrame) -> list[str]:
     values: list[str] = []
     values.extend(_string_values(frame.role_assignments.values()))
     values.extend(_string_values(frame.relation_assignments.values()))
     values.extend(frame.supporting_trace_ids)
-    values.extend(frame.conflicting_trace_ids)
     return _dedupe(values)
 
 

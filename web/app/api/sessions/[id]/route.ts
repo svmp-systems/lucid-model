@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { loadLocalChatSession } from "@/src/lucid-chat";
+import { loadLocalChatSession, deleteLocalSession } from "@/src/lucid-chat";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +8,18 @@ export const dynamic = "force-dynamic";
 type RouteContext = {
   params: Promise<{ id: string }>;
 };
+
+export async function DELETE(_request: Request, context: RouteContext) {
+  const { id } = await context.params;
+
+  try {
+    await deleteLocalSession(id);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "session delete failed";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}
 
 export async function GET(request: Request, context: RouteContext) {
   const { id } = await context.params;

@@ -11,6 +11,8 @@ from lucid.ir.cue import CueCloud
 from lucid.ir.serde import to_dict
 from lucid.cognition.memory.dmf import DmfAuditEvent, DmfTraceRecord, DynamicMemoryField
 
+MAX_LEARNED_LINK_DEGREE = 16
+
 
 def _next_trace_id(dmf: DynamicMemoryField) -> str:
     max_seen = 0
@@ -81,24 +83,47 @@ def _link_coactivations(
             if new != old:
                 trace.coactivation_links[other_idx] = new
                 changed += 1
-        if changed:
+        pruned = _prune_link_map(trace.coactivation_links, max_degree=MAX_LEARNED_LINK_DEGREE)
+        if changed or pruned:
             _emit_audit_event(
                 dmf,
                 DmfAuditEvent(
                     event_type="link_coactivation",
-                    summary=f"Updated {changed} coactivation link(s) for trace {idx}.",
+                    summary=(
+                        f"Updated {changed} coactivation link(s) for trace {idx}; "
+                        f"pruned {pruned} stale link(s)."
+                    ),
                     trace_index=idx,
                     trace_id_after=trace.trace_id,
                     cue_keys=list(trace.cue_affinities),
                     details={
                         "learning_rate": learning_rate,
                         "linked_trace_count": changed,
+                        "max_link_degree": MAX_LEARNED_LINK_DEGREE,
+                        "pruned_link_count": pruned,
                     },
                 ),
                 trace_before=trace_before,
                 trace_after=trace,
                 snapshot_before=snapshot_before,
             )
+
+
+def _prune_link_map(links: dict[int, float], *, max_degree: int) -> int:
+    if max_degree <= 0 or len(links) <= max_degree:
+        return 0
+    keep = {
+        idx
+        for idx, _weight in sorted(
+            links.items(),
+            key=lambda item: (-float(item[1]), int(item[0])),
+        )[:max_degree]
+    }
+    before = len(links)
+    for idx in list(links):
+        if idx not in keep:
+            links.pop(idx, None)
+    return before - len(links)
 
 
 def _select_cues_for_winner(

@@ -5,6 +5,17 @@ from __future__ import annotations
 from uuid import uuid4
 
 from lucid.cognition.output.lucidity.config import normalize_task_intent
+from lucid.cognition.input.cue.encoder import normalize_cue_key
+from lucid.training.source_context import (
+    DEFINITION_RELATIONS,
+    MECHANISM_RELATIONS,
+    VENDOR_DEFINITION_RELATIONS,
+    is_mechanism_query_surfaces,
+    is_renderable_definition_target,
+    is_term_definition_query_surfaces,
+    is_vendor_definition_query_surfaces,
+    vendor_source_from_surfaces,
+)
 from lucid.ir.basins import BasinAssembly, BasinOutput, CandidateBasinState
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import CommitShape
@@ -99,6 +110,171 @@ def _rollout_artifact(projection: ProjectorOutput | None) -> tuple[dict, Project
     return artifact, rollout
 
 
+def _cue_surfaces(inp: LucidityInput) -> set[str]:
+    surfaces: set[str] = set()
+    for unit in inp.perceptual_evidence_graph.candidate_units:
+        key = normalize_cue_key(unit.surface)
+        if key:
+            surfaces.add(key)
+    return surfaces
+
+
+def _active_mechanism_frame(inp: LucidityInput) -> CandidateFrame | None:
+    for frame in inp.binding_output.candidate_frames:
+        if frame.frame_type == "mechanism_query" and not frame.unresolved_slot_names:
+            return frame
+    return None
+
+
+def _relation_source_refs(relation: dict, state: CandidateBasinState) -> list[str]:
+    return [
+        str(ref)
+        for ref in relation.get("source_refs") or state.source_refs
+        if str(ref).strip()
+    ]
+
+
+def _relation_sources(unit: RenderUnit) -> list[str]:
+    refs: list[str] = []
+    for ref in unit.source_refs:
+        if ref.ref_type == "source" and str(ref.ref_id).strip():
+            refs.append(str(ref.ref_id))
+    payload = dict(unit.payload)
+    for ref in payload.get("source_refs") or []:
+        if str(ref).strip():
+            refs.append(str(ref))
+    return refs
+
+
+def _definition_target_score(target: str) -> float:
+    cleaned = " ".join(str(target or "").strip().split()).lower()
+    if not cleaned:
+        return -1.0
+    score = min(len(cleaned) / 120.0, 0.4)
+    if any(token in cleaned for token in ("field", "discipline", "technology", "science", "engineering", "system")):
+        score += 0.6
+    if cleaned.startswith(("a ", "an ", "the ")):
+        score += 0.15
+    if cleaned.startswith(("still ", "of particular", "an emergent", "an implementation")):
+        score -= 0.8
+    if cleaned.startswith("can "):
+        score -= 0.5
+    return score
+
+
+def _definition_basin_render_units(
+    state: CandidateBasinState,
+    *,
+    max_units: int = 3,
+) -> list[RenderUnit]:
+    units = [
+        unit
+        for unit in _basin_relation_render_units(state, relation_names=DEFINITION_RELATIONS)
+        if is_renderable_definition_target(
+            str(unit.payload.get("target") or ""),
+            relation=str(unit.payload.get("relation") or ""),
+        )
+    ]
+    if not units:
+        return []
+
+    by_relation: dict[str, list[RenderUnit]] = {}
+    for unit in units:
+        rel = str(unit.payload.get("relation") or "").strip().lower()
+        by_relation.setdefault(rel, []).append(unit)
+
+    type_relations = ("type_of", "is_a", "kind_of")
+    type_candidates: list[RenderUnit] = []
+    for rel in type_relations:
+        type_candidates.extend(by_relation.get(rel, []))
+    type_candidates.sort(
+        key=lambda unit: (
+            _definition_target_score(str(unit.payload.get("target") or "")),
+            unit.confidence,
+        ),
+        reverse=True,
+    )
+    if not type_candidates:
+        return units[:1]
+
+    anchor = type_candidates[0]
+    preferred_sources = set(_relation_sources(anchor))
+    priority = [
+        "type_of",
+        "is_a",
+        "kind_of",
+        "property",
+        "has_property",
+        "capability",
+        "can",
+        "challenge",
+        "limitation",
+    ]
+    picked: list[RenderUnit] = [anchor]
+    for rel in priority[1:]:
+        candidates = [
+            unit
+            for unit in by_relation.get(rel, [])
+            if not preferred_sources or set(_relation_sources(unit)) & preferred_sources
+        ]
+        if not candidates:
+            continue
+        candidates.sort(key=lambda unit: (-unit.confidence, len(str(unit.payload.get("target") or ""))))
+        picked.append(candidates[0])
+        if len(picked) >= max_units:
+            break
+    return picked
+
+
+def _definition_basin_state_for_query(
+    inp: LucidityInput,
+    primary_state: CandidateBasinState | None,
+    primary_subject: str,
+) -> CandidateBasinState | None:
+    if primary_state is not None and "definition" in primary_state.basin_id:
+        return primary_state
+    subject_key = _norm_label(primary_subject)
+    ranked: list[tuple[int, float, CandidateBasinState]] = []
+    for state in inp.basin_output.candidate_basin_states:
+        if "definition" not in state.basin_id:
+            continue
+        payload = state.quantized_payload if isinstance(state.quantized_payload, dict) else {}
+        concept_key = _norm_label(payload.get("concept_id") or payload.get("canonical_label") or "")
+        if subject_key and concept_key and concept_key != subject_key:
+            continue
+        priority = 0
+        if subject_key and subject_key in state.basin_id.replace("-", "_"):
+            priority = 2
+        elif concept_key:
+            priority = 1
+        ranked.append((priority, state.energy, state))
+    if not ranked:
+        return primary_state if primary_state is not None and "definition" in primary_state.basin_id else None
+    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return ranked[0][2]
+
+
+def _vendor_definition_primary_basin(inp: LucidityInput) -> str:
+    ranked: list[tuple[int, float, str]] = []
+    for state in inp.basin_output.candidate_basin_states:
+        if "definition" not in state.basin_id:
+            continue
+        if "quantum_physic" in state.basin_id:
+            continue
+        priority = 0
+        if "quantum_computer" in state.basin_id:
+            priority = 3
+        elif "quantum_computing" in state.basin_id:
+            priority = 2
+        else:
+            continue
+        ranked.append((priority, state.energy, state.basin_id))
+    if not ranked:
+        return ""
+    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return ranked[0][2]
+
+
 def _unit_surfaces(inp: LucidityInput) -> dict[str, str]:
     return {
         unit.unit_id: unit.surface
@@ -119,17 +295,30 @@ def _norm_label(value: object) -> str:
     return "_".join(str(value or "").strip().lower().replace("-", " ").split())
 
 
-def _graph_relation_render_units(inp: LucidityInput, *, subject_filter: str = "") -> list[RenderUnit]:
+def _graph_relation_render_units(
+    inp: LucidityInput,
+    *,
+    subject_filter: str = "",
+    frame_id_filter: str = "",
+    relation_names: frozenset[str] | None = None,
+    source_filter: str = "",
+) -> list[RenderUnit]:
     units: list[RenderUnit] = []
     index = 0
     seen_claims: set[tuple[str, str, str]] = set()
     subject_filter_key = _norm_label(subject_filter)
     for frame in inp.binding_output.candidate_frames:
+        if frame_id_filter and frame.frame_id != frame_id_filter:
+            continue
         for graph in frame.local_graphs:
             for edge in graph.edges:
                 if edge.edge_kind != "relation" or not edge.label:
                     continue
                 if edge.edge_id.startswith("alias_"):
+                    continue
+                if relation_names and edge.label not in relation_names:
+                    continue
+                if source_filter and source_filter not in [str(ref) for ref in edge.provenance_refs if str(ref)]:
                     continue
                 subject = _graph_node_label(frame, edge.source_id)
                 target = _graph_node_label(frame, edge.target_id)
@@ -195,7 +384,12 @@ def _source_refs_from_ids(
     ]
 
 
-def _basin_relation_render_units(state: CandidateBasinState | None) -> list[RenderUnit]:
+def _basin_relation_render_units(
+    state: CandidateBasinState | None,
+    *,
+    relation_names: frozenset[str] | None = None,
+    source_filter: str = "",
+) -> list[RenderUnit]:
     if state is None:
         return []
     payload = dict(state.quantized_payload)
@@ -211,11 +405,11 @@ def _basin_relation_render_units(state: CandidateBasinState | None) -> list[Rend
         target = str(relation.get("target") or "").strip()
         if not rel_name or not target:
             continue
-        rel_sources = [
-            str(ref)
-            for ref in relation.get("source_refs") or state.source_refs
-            if str(ref).strip()
-        ]
+        if relation_names and rel_name not in relation_names:
+            continue
+        rel_sources = _relation_source_refs(relation, state)
+        if source_filter and source_filter not in rel_sources:
+            continue
         refs = [
             SourceRef(ref_type="basin", ref_id=state.basin_id, role="supports"),
             *[
@@ -331,6 +525,11 @@ def _committed_render_units(
     units: list[RenderUnit] = []
     frame_by_id = {frame.frame_id: frame for frame in inp.binding_output.candidate_frames}
     scoped = _frame_for_scope(inp.binding_output.candidate_frames, inp.context_op_output.context_frames)
+    cue_surfaces = _cue_surfaces(inp)
+    vendor_source = vendor_source_from_surfaces(cue_surfaces)
+    mechanism_frame = _active_mechanism_frame(inp)
+    vendor_definition = is_vendor_definition_query_surfaces(cue_surfaces)
+    term_definition = is_term_definition_query_surfaces(cue_surfaces)
     primary_state = (
         next(
             (item for item in inp.basin_output.candidate_basin_states if item.basin_id == primary_basin_id),
@@ -345,8 +544,72 @@ def _committed_render_units(
         primary_subject = str(
             primary_payload.get("concept_id") or primary_payload.get("canonical_label") or ""
         )
-    graph_units = _graph_relation_render_units(inp, subject_filter=primary_subject)
+
+    graph_units: list[RenderUnit] = []
     basin_relation_units: list[RenderUnit] = []
+
+    if mechanism_frame is not None:
+        graph_units = _graph_relation_render_units(
+            inp,
+            frame_id_filter=mechanism_frame.frame_id,
+            relation_names=MECHANISM_RELATIONS,
+            source_filter=vendor_source,
+        )
+        if not graph_units:
+            graph_units = _graph_relation_render_units(
+                inp,
+                frame_id_filter=mechanism_frame.frame_id,
+                relation_names=MECHANISM_RELATIONS,
+            )
+        if primary_state is not None and not graph_units:
+            basin_relation_units = _basin_relation_render_units(
+                primary_state,
+                relation_names=MECHANISM_RELATIONS,
+                source_filter=vendor_source,
+            )
+            if not basin_relation_units:
+                basin_relation_units = _basin_relation_render_units(
+                    primary_state,
+                    relation_names=MECHANISM_RELATIONS,
+                )
+    elif vendor_definition:
+        if primary_state is not None:
+            for relation_names in (
+                frozenset({"capability", "uses"}),
+                frozenset({"type_of"}),
+                VENDOR_DEFINITION_RELATIONS,
+            ):
+                basin_relation_units = [
+                    unit
+                    for unit in _basin_relation_render_units(
+                        primary_state,
+                        relation_names=relation_names,
+                        source_filter=vendor_source,
+                    )
+                    if _norm_label(unit.payload.get("subject")) in {"quantum_computer", "quantum_computing"}
+                ]
+                if basin_relation_units:
+                    break
+        if not basin_relation_units and primary_state is not None:
+            basin_relation_units = [
+                unit
+                for unit in _basin_relation_render_units(
+                    primary_state,
+                    relation_names=frozenset({"type_of", "uses", "capability"}),
+                )
+                if _norm_label(unit.payload.get("subject")) in {"quantum_computer", "quantum_computing"}
+            ][:1]
+        basin_relation_units = basin_relation_units[:1]
+        graph_units = []
+    elif term_definition:
+        def_state = _definition_basin_state_for_query(inp, primary_state, primary_subject)
+        if def_state is not None:
+            basin_relation_units = _definition_basin_render_units(def_state)
+        graph_units = []
+    else:
+        graph_units = _graph_relation_render_units(inp, subject_filter=primary_subject)
+        if primary_state is not None and not graph_units:
+            basin_relation_units = _basin_relation_render_units(primary_state)
 
     if primary_basin_id:
         state = primary_state
@@ -378,11 +641,11 @@ def _committed_render_units(
                 source_refs=basin_refs,
             )
         )
-        if state is not None and not graph_units:
+        if state is not None and not graph_units and not basin_relation_units:
             basin_relation_units = _basin_relation_render_units(state)
-            units.extend(basin_relation_units)
 
     units.extend(graph_units)
+    units.extend(basin_relation_units)
     has_relation_units = bool(graph_units or basin_relation_units)
 
     for index, commit in enumerate(frame_commits):
@@ -429,12 +692,35 @@ def build_committed_state(
     shape = _pick_commit_shape(inp, assembly=assembly)
     artifact, rollout = _rollout_artifact(projection or inp.projection_output)
 
+    primary_basin_id = summary.top_basin_id
+    cue_surfaces = _cue_surfaces(inp)
+    if is_vendor_definition_query_surfaces(cue_surfaces):
+        vendor_basin = _vendor_definition_primary_basin(inp)
+        if not vendor_basin:
+            for state in inp.basin_output.candidate_basin_states:
+                if state.basin_id.endswith("quantum_computer_definition"):
+                    vendor_basin = state.basin_id
+                    break
+        if vendor_basin:
+            primary_basin_id = vendor_basin
+    for frame in inp.binding_output.candidate_frames:
+        if frame.frame_type != "mechanism_query" or frame.unresolved_slot_names:
+            continue
+        for state in inp.basin_output.candidate_basin_states:
+            if frame.frame_id in state.supporting_frame_ids and "mechanism" in state.basin_id:
+                primary_basin_id = state.basin_id
+                break
+        if primary_basin_id and primary_basin_id != summary.top_basin_id:
+            break
+
     frame_commits: list[FrameCommit] = []
     scoped = _frame_for_scope(inp.binding_output.candidate_frames, inp.context_op_output.context_frames)
     for ctx_id, frame in scoped.items():
-        basin_id = summary.top_basin_id
+        basin_id = primary_basin_id or summary.top_basin_id
         for state in inp.basin_output.candidate_basin_states:
             if frame.frame_id in state.supporting_frame_ids or ctx_id in state.scope_frame_ids:
+                if frame.frame_type == "mechanism_query" and "mechanism" not in state.basin_id:
+                    continue
                 basin_id = state.basin_id
                 break
         frame_commits.append(
@@ -460,14 +746,14 @@ def build_committed_state(
         inp=inp,
         frame_commits=frame_commits,
         artifact=artifact,
-        primary_basin_id=summary.top_basin_id,
+        primary_basin_id=primary_basin_id or summary.top_basin_id,
         assembly_ids=assembly_ids,
     )
 
     return CommittedState(
         commit_id=str(uuid4()),
         commit_shape=shape,
-        primary_basin_id=summary.top_basin_id,
+        primary_basin_id=primary_basin_id or summary.top_basin_id,
         assembly_ids=assembly_ids,
         member_basin_ids=member_ids,
         frame_commits=frame_commits,

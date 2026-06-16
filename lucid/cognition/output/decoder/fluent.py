@@ -182,19 +182,19 @@ def _definition_line_for_subject(subject: str, claims: list[RelationClaim]) -> F
         *by_relation.get("type_of", []),
         *by_relation.get("is_a", []),
         *by_relation.get("kind_of", []),
-    ]
+    ][:1]
     property_claims = [
         *by_relation.get("property", []),
         *by_relation.get("has_property", []),
-    ]
+    ][:1]
     capability_claims = [
         *by_relation.get("can", []),
         *by_relation.get("capability", []),
-    ]
+    ][:1]
     challenge_claims = [
         *by_relation.get("challenge", []),
         *by_relation.get("limitation", []),
-    ]
+    ][:1]
 
     if not type_claims or not (property_claims or capability_claims or challenge_claims):
         return None
@@ -313,17 +313,26 @@ def compose_fluent_lines(units: list[RenderUnit]) -> list[FluentLine]:
         claims_by_subject[subject_key].append(claim)
 
     consumed_unit_ids: set[str] = set()
+    consumed_subjects: set[str] = set()
     for subject_key in subject_order:
         definition_line = _definition_line_for_subject(subject_key, claims_by_subject[subject_key])
         if definition_line is None:
             continue
         lines.append(definition_line)
         consumed_unit_ids.update(definition_line.unit_ids)
+        consumed_subjects.add(subject_key)
+        for claim in claims_by_subject[subject_key]:
+            if claim.relation.strip().lower() in {"type_of", "is_a", "kind_of"}:
+                consumed_unit_ids.add(claim.unit_id)
 
     grouped = group_relation_claims(
         [claim for claim in claims if claim.unit_id not in consumed_unit_ids]
     )
     for subject, relation, claims in grouped:
+        if relation in {"type_of", "is_a", "kind_of"} and humanize(subject).strip().lower() in consumed_subjects:
+            continue
+        if relation in {"type_of", "is_a", "kind_of"}:
+            claims = claims[:1]
         targets = [claim.target for claim in claims]
         text = realize_relation_group(subject, relation, targets)
         if not text:

@@ -19,10 +19,11 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from lucid.runtime.paths import resolve_checkpoint
+from lucid.runtime.paths import resolve_checkpoint, resolve_train_path
 from lucid.training.checkpoint.metadata import (
     apply_runtime_promotion_fields,
     ensure_metadata,
+    record_contradiction,
     record_support,
     source_backed_shadow_promotion,
 )
@@ -35,6 +36,25 @@ from lucid.training.checkpoint.store import (
     load_checkpoint,
     save_checkpoint,
 )
+from lucid.training.ingest_learning import (
+    DEFAULT_MAX_CANDIDATE_TERMS,
+    DEFAULT_MAX_RELATIONS_PER_CONCEPT,
+    DEFAULT_MAX_RELATIONS_PER_FACET,
+    IngestLearningReport,
+    SentenceAudit,
+    apply_contradiction_branches,
+    build_mechanism_relation_aliases,
+    cap_relations_by_facet,
+    consolidate_vendor_artifact_concepts,
+    consolidate_trace_records,
+    count_concept_heat_tiers,
+    evaluate_crosstalk,
+    format_ingest_audit_text,
+    normalize_relation_target,
+    write_ingest_audit_report,
+)
+from lucid.training.quantum_articles import BOOTSTRAP_OPERATORS
+from lucid.training.source_context import SOURCE_ENTITY_BY_ARTICLE, VENDOR_ARTIFACT_RE
 
 TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'-]*")
@@ -463,7 +483,7 @@ def split_sentences(text: str) -> list[str]:
     seen: set[str] = set()
     for raw in SENTENCE_RE.split(text):
         sentence = " ".join(raw.strip().split())
-        if not 45 <= len(sentence) <= 360:
+        if not 38 <= len(sentence) <= 360:
             continue
         lowered = sentence.lower()
         if not any(term in lowered for term in DOMAIN_TERMS):
@@ -539,7 +559,11 @@ def term_variants(term: str) -> list[str]:
     return dedupe([variant for variant in variants if variant])
 
 
-def extract_candidate_terms(articles: list[Article], *, limit: int = 90) -> list[str]:
+def extract_candidate_terms(
+    articles: list[Article],
+    *,
+    limit: int = DEFAULT_MAX_CANDIDATE_TERMS,
+) -> list[str]:
     counts: Counter[str] = Counter()
     doc_counts: Counter[str] = Counter()
     for article in articles:
@@ -558,6 +582,8 @@ def extract_candidate_terms(articles: list[Article], *, limit: int = 90) -> list
                     if n > 1 and gram[0] in STOPWORDS | {"quantum"} and gram[-1] in STOPWORDS:
                         continue
                     phrase = " ".join(gram)
+                    if VENDOR_ARTIFACT_RE.match(normalize_key(phrase)):
+                        continue
                     if len(phrase) < 4:
                         continue
                     if n == 1 and phrase not in DOMAIN_TERMS:
@@ -585,13 +611,24 @@ def extract_candidate_terms(articles: list[Article], *, limit: int = 90) -> list
     return [term for _score, term in scored[:limit]]
 
 
+def subject_anchor(sentence: str, subject: str) -> int | None:
+    span = subject_span(sentence, subject)
+    if span is not None:
+        return span[1]
+    lowered = sentence.lower()
+    for variant in sorted(term_variants(subject), key=lambda value: (-len(value), value)):
+        match = re.search(rf"\b{re.escape(variant.lower())}\b", lowered)
+        if match:
+            return match.end()
+    return None
+
+
 def classify_relation(sentence: str, subject: str) -> tuple[str, str]:
     lowered = sentence.lower()
-    span = subject_span(lowered, subject)
-    if span is None:
+    stop = subject_anchor(lowered, subject)
+    if stop is None:
         return "", ""
-    start, stop = span
-    if len(lowered[:start].split()) > 12:
+    if len(lowered[:stop].split()) > 16:
         return "", ""
 
     after = lowered[stop:]
@@ -599,13 +636,39 @@ def classify_relation(sentence: str, subject: str) -> tuple[str, str]:
     after = re.sub(r"^(?:which|that|they|it)\s+", "", after)
     if any(after.startswith(marker) for marker in RHETORICAL_SENTENCE_MARKERS):
         return "", ""
-    near = r"^(?:[a-z0-9'-]+\s+){0,5}?"
+    contrast_markers = (
+        "although ",
+        "though ",
+        "while ",
+        "whereas ",
+        "instead of",
+        "unlike",
+        "different from",
+        "compared with",
+        "rather than",
+    )
+    if lowered.strip().startswith(contrast_markers) or any(
+        marker in lowered for marker in contrast_markers[4:]
+    ):
+        target = clean_target(sentence, max_words=32)
+        return ("contrast", target) if usable_target("contrast", target) else ("", "")
+    near = r"^(?:[a-z0-9'-]+\s+){0,8}?"
     patterns: list[tuple[str, str]] = [
         ("type_of", near + r"\b(?:is|are|refers to|is called|are called)\b\s+(?P<tail>.+)"),
-        ("uses", near + r"\b(?:uses|use|using|relies on|leverage|leverages|utilize|utilizes)\b\s+(?P<tail>.+)"),
+        ("type_of", near + r"\b(?:defined as|known as|described as|understood as)\b\s+(?P<tail>.+)"),
+        ("uses", near + r"\b(?:uses|use|using|relies on|leverage|leverages|utilize|utilizes|utilizing)\b\s+(?P<tail>.+)"),
+        ("uses", near + r"\b(?:is used to|are used to)\b\s+(?P<tail>.+)"),
+        ("uses", near + r"\b(?:involves|involve|employs|employ)\b\s+(?P<tail>.+)"),
+        ("uses", near + r"\b(?:depends on|depend on|requires|require|needs|need)\b\s+(?P<tail>.+)"),
+        ("uses", near + r"\b(?:works by|work by|operates by|operate by|functions by|function by)\b\s+(?P<tail>.+)"),
         ("enables", near + r"\b(?:enables|enable|allows|allow|supports|support)\b\s+(?P<tail>.+)"),
+        ("enables", near + r"\b(?:makes it possible|make it possible|makes possible|make possible)\b\s+(?P<tail>.+)"),
         ("capability", near + r"\b(?:can|could|may|might)\b\s+(?P<tail>.+)"),
+        ("capability", near + r"\b(?:designed to|built to|intended to|aimed to|meant to)\b\s+(?P<tail>.+)"),
         ("property", near + r"\b(?:has|have|include|includes|contain|contains|store|stores|represent|represents|take on|takes on)\b\s+(?P<tail>.+)"),
+        ("property", near + r"\b(?:characterized by|consists of|consist of|made up of|composed of|formed from)\b\s+(?P<tail>.+)"),
+        ("property", near + r"\b(?:provides|provide|offers|offer|delivers|deliver)\b\s+(?P<tail>.+)"),
+        ("related_to", near + r"\b(?:related to|associated with|connected to|linked to)\b\s+(?P<tail>.+)"),
     ]
     for relation, pattern in patterns:
         match = re.search(pattern, after, re.I)
@@ -626,6 +689,7 @@ def classify_relation(sentence: str, subject: str) -> tuple[str, str]:
                 ("based on", "built with", "composed of", "entangled", "placed into", "represented by")
             ):
                 relation = "property"
+            relation, target = normalize_relation_target(relation, target)
             if usable_target(relation, target):
                 return relation, target
             return "", ""
@@ -700,6 +764,29 @@ def usable_target(relation: str, target: str) -> bool:
     return True
 
 
+def fallback_subject(sentence: str, terms: list[str]) -> str:
+    """Pick a term whose relation pattern matches even when strict span heuristics fail."""
+
+    lowered = sentence.lower()
+    matches = [
+        term
+        for term in terms
+        if any(re.search(rf"\b{re.escape(variant.lower())}\b", lowered) for variant in term_variants(term))
+    ]
+    scored: list[tuple[int, int, str]] = []
+    for term in matches:
+        relation, _target = classify_relation(sentence, humanize_key(term))
+        if not relation:
+            continue
+        anchor = subject_anchor(lowered, humanize_key(term))
+        position = anchor if anchor is not None else 999
+        scored.append((RELATION_PRIORITY.get(relation, 99), position, term))
+    if not scored:
+        return ""
+    scored.sort(key=lambda row: (row[0], row[1], -len(row[2].split()), row[2]))
+    return scored[0][2]
+
+
 def best_subject(sentence: str, terms: list[str]) -> str:
     normalized = " " + humanize_key(sentence) + " "
     matches = [
@@ -727,6 +814,9 @@ def best_subject(sentence: str, terms: list[str]) -> str:
     if scored:
         scored.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
         return scored[0][3]
+    fallback = fallback_subject(sentence, terms)
+    if fallback:
+        return fallback
     matches.sort(key=lambda term: (-len(term.split()), -len(term), term))
     return matches[0] if matches else ""
 
@@ -929,7 +1019,11 @@ def merge_equivalent_concepts(
         canonical = dict(by_id.get(canonical_id) or group[0])
         canonical["concept_id"] = canonical_id
         canonical["terms"] = dedupe(terms)
-        canonical["relations"] = merge_relations(relations)[:6]
+        canonical["relations"] = cap_relations_by_facet(
+            merge_relations(relations),
+            max_per_facet=DEFAULT_MAX_RELATIONS_PER_FACET,
+            max_total=DEFAULT_MAX_RELATIONS_PER_CONCEPT,
+        )
         canonical["source_refs"] = sorted(set(source_refs))
         extraction = dict(canonical.get("extraction") or {})
         extraction["canonicalization"] = {
@@ -945,21 +1039,43 @@ def merge_equivalent_concepts(
     return merged
 
 
-def extract_concepts(articles: list[Article]) -> list[dict[str, Any]]:
+def extract_concepts(
+    articles: list[Article],
+    *,
+    audit: SentenceAudit | None = None,
+) -> list[dict[str, Any]]:
+    concepts, _report = extract_concepts_with_learning(articles, audit=audit)
+    return concepts
+
+
+def extract_concepts_with_learning(
+    articles: list[Article],
+    *,
+    audit: SentenceAudit | None = None,
+) -> tuple[list[dict[str, Any]], IngestLearningReport]:
+    sentence_audit = audit or SentenceAudit()
     terms = extract_candidate_terms(articles)
     relations_by_concept: dict[str, list[dict[str, Any]]] = defaultdict(list)
     term_source_refs: dict[str, set[str]] = defaultdict(set)
 
     for article in articles:
+        sentence_audit.total_raw += len(article.sentences)
         for sentence in article.sentences:
+            sentence_audit.eligible += 1
             subject = best_subject(sentence, terms)
             if not subject:
+                sentence_audit.skipped_no_subject += 1
+                sentence_audit.skip_reasons["no_subject"] += 1
                 continue
             concept_id = normalize_key(subject)
             relation, target = classify_relation(sentence, humanize_key(subject))
             if not relation:
+                sentence_audit.skipped_no_relation += 1
+                sentence_audit.skip_reasons["no_relation_pattern"] += 1
                 continue
             if not target or normalize_key(target) == concept_id:
+                sentence_audit.skipped_self_target += 1
+                sentence_audit.skip_reasons["self_target"] += 1
                 continue
             record = {
                 "relation": relation,
@@ -968,8 +1084,12 @@ def extract_concepts(articles: list[Article]) -> list[dict[str, Any]]:
                 "source_refs": [article.source_id],
                 "source_sentence": sentence,
             }
+            entity = SOURCE_ENTITY_BY_ARTICLE.get(article.source_id, "")
+            if entity:
+                record["source_entity"] = entity
             relations_by_concept[concept_id].append(record)
             term_source_refs[concept_id].add(article.source_id)
+            sentence_audit.extracted += 1
 
     equivalence_edges = extract_equivalence_edges(
         articles,
@@ -981,7 +1101,11 @@ def extract_concepts(articles: list[Article]) -> list[dict[str, Any]]:
     concepts: list[dict[str, Any]] = []
     for term in terms:
         concept_id = normalize_key(term)
-        relations = merge_relations(relations_by_concept.get(concept_id, []))[:4]
+        relations = cap_relations_by_facet(
+            merge_relations(relations_by_concept.get(concept_id, [])),
+            max_per_facet=DEFAULT_MAX_RELATIONS_PER_FACET,
+            max_total=DEFAULT_MAX_RELATIONS_PER_CONCEPT,
+        )
         if not relations:
             continue
         concepts.append(
@@ -996,12 +1120,30 @@ def extract_concepts(articles: list[Article]) -> list[dict[str, Any]]:
                 },
             }
         )
-    return merge_equivalent_concepts(
+
+    merged = merge_equivalent_concepts(
         concepts,
         equivalence_edges,
         relations_by_concept,
         term_source_refs,
     )
+    before_split = len(merged)
+    branched, conflict_events = apply_contradiction_branches(
+        merged,
+        branch_hash=lambda relation: short_hash(
+            f"{relation.get('relation')}:{relation.get('target')}:{relation.get('source_sentence')}"
+        ),
+    )
+    branched = consolidate_vendor_artifact_concepts(branched)
+    report = IngestLearningReport(
+        sentence_audit=sentence_audit,
+        concepts_before_split=before_split,
+        concepts_after_split=len(branched),
+        contradiction_splits=len(conflict_events),
+        contradiction_events=conflict_events,
+        article_sentence_counts={article.source_id: len(article.sentences) for article in articles},
+    )
+    return branched, report
 
 
 def relation_confidence(relation: str, sentence: str) -> float:
@@ -1089,7 +1231,7 @@ def build_trace_records(concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "last_update_summary": "scale_ingest",
             }
         )
-        for index, relation in enumerate(concept.get("relations", [])[:8]):
+        for index, relation in enumerate(concept.get("relations", [])):
             rid = short_hash(f"{concept_id}:{index}:{relation.get('source_sentence')}")
             records.append(
                 {
@@ -1102,6 +1244,11 @@ def build_trace_records(concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                             (relation.get("relation", ""), 0.64),
                             (relation.get("target", ""), 0.56),
                             *[(term, 0.78) for term in terms],
+                            *(
+                                [(str(relation.get("source_entity", "")), 0.72)]
+                                if relation.get("source_entity")
+                                else []
+                            ),
                         ],
                     ),
                     "cluster_id": concept_id,
@@ -1372,19 +1519,33 @@ def basic_language_response(phrase: str) -> tuple[str, str]:
     return "capability", "I'm Lucid. I answer from audited pipeline state."
 
 
+def run_ingest_learning_pipeline(
+    articles: list[Article],
+    *,
+    audit: SentenceAudit | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], IngestLearningReport]:
+    concepts, report = extract_concepts_with_learning(articles, audit=audit)
+    traces = build_trace_records(concepts)
+    report.traces_before_consolidation = len(traces)
+    traces, deduped = consolidate_trace_records(traces)
+    report.traces_after_consolidation = len(traces)
+    report.traces_deduplicated = deduped
+    return concepts, traces, report
+
+
 def train_scale_ingest(
     checkpoint: str | Path = "checkpoints/saves/v.0.2",
     *,
     pin_loaded: bool = False,
+    write_audit: bool = True,
 ) -> dict[str, Any]:
     root = resolve_checkpoint(checkpoint)
     state = empty_checkpoint(root.name or "v.0.2")
     state.checkpoint_id = root.name or "v.0.2"
 
     articles = load_articles()
-    concepts = extract_concepts(articles)
-    traces = build_trace_records(concepts)
-    aliases = build_alias_records(concepts)
+    concepts, traces, learning_report = run_ingest_learning_pipeline(articles)
+    aliases = [*build_alias_records(concepts), *build_mechanism_relation_aliases()]
     basins = build_basin_records(concepts)
     basic = build_basic_language_records()
 
@@ -1394,6 +1555,7 @@ def train_scale_ingest(
     trace_store = state.ensure_store("tracebank").setdefault("records", [])
     basin_store = state.ensure_store("basin_bank").setdefault("records", [])
     alias_store = state.ensure_store("relation_aliases").setdefault("aliases", [])
+    operator_store = state.ensure_store("operator_bank").setdefault("operators", [])
     decoder_store = state.ensure_store("decoder_adapter").setdefault("render_targets", [])
 
     upsert_by_key(
@@ -1520,8 +1682,37 @@ def train_scale_ingest(
         upsert_by_key(alias_store, "alias_id", alias)
         record_support(state, f"alias:{alias['alias_id']}", "relation_alias")
 
+    for operator in BOOTSTRAP_OPERATORS:
+        upsert_by_key(operator_store, "operator_id", operator)
+        ensure_metadata(state, f"operator:{operator['operator_id']}", "operator", source="scale_ingest")
+
+    for event in learning_report.contradiction_events:
+        base_id = str(event.get("base_concept_id") or "")
+        if base_id:
+            record_contradiction(state, f"concept:{base_id}", "concept")
+
     for target in basic["decoder_targets"]:
         upsert_by_key(decoder_store, "template_id", target)
+
+    metadata_objects = state.ensure_store("learned_metadata").get("objects", {})
+    warm, probation, quarantine = count_concept_heat_tiers(concepts, metadata_objects)
+    learning_report.warm_concepts = warm
+    learning_report.probation_concepts = probation
+    learning_report.quarantine_concepts = quarantine
+
+    audit_payload = learning_report.to_dict()
+    audit_payload["checkpoint"] = str(root)
+    audit_payload["concepts"] = len(concepts)
+    audit_payload["traces"] = len(trace_store)
+    audit_payload["basins"] = len(basin_store)
+    audit_path: str | None = None
+    if write_audit:
+        audit_dir = resolve_train_path("audit/runs/ingest")
+        audit_file = audit_dir / f"{root.name or 'ingest'}-report.json"
+        write_ingest_audit_report(audit_file, audit_payload)
+        audit_path = str(audit_file)
+        text_report = audit_dir / f"{root.name or 'ingest'}-report.txt"
+        text_report.write_text(format_ingest_audit_text(learning_report), encoding="utf-8")
 
     save_checkpoint(state, root, force=True, step_delta=1)
     summary = checkpoint_summary(load_checkpoint(root, create=False))
@@ -1541,7 +1732,7 @@ def train_scale_ingest(
         "registered": registered,
         "loaded": loaded,
         "articles": len(articles),
-        "article_sentence_counts": {article.source_id: len(article.sentences) for article in articles},
+        "article_sentence_counts": learning_report.article_sentence_counts,
         "concepts": len(concepts),
         "traces": len(trace_store),
         "basins": len(basin_store),
@@ -1549,15 +1740,79 @@ def train_scale_ingest(
         "decoder_targets": len(decoder_store),
         "metadata_objects": len(state.ensure_store("learned_metadata").get("objects", {})),
         "store_counts": summary["store_counts"],
+        "ingest_learning": learning_report.to_dict(),
+        "ingest_audit_path": audit_path,
+        "ingest_coverage_ratio": learning_report.sentence_audit.to_dict()["coverage_ratio"],
     }
+
+
+def run_crosstalk_smoke() -> dict[str, Any]:
+    """Synthetic two-article crosstalk check from constitution/test/learning.md."""
+
+    articles = [
+        Article(
+            source_id="crosstalk_article_one",
+            title="Crosstalk Article 1",
+            url="https://example.test/crosstalk/one",
+            text="",
+            sentences=[
+                "Quantum computing is a multidisciplinary field that uses quantum mechanics to solve complex problems.",
+                "Quantum computing relies on qubits and superposition to perform useful computation.",
+            ],
+        ),
+        Article(
+            source_id="crosstalk_article_two",
+            title="Crosstalk Article 2",
+            url="https://example.test/crosstalk/two",
+            text="",
+            sentences=[
+                "Quantum computing is merely a theoretical curiosity with no practical use in industry today.",
+                "Quantum computing hardware remains too noisy for reliable results across most benchmarks.",
+            ],
+        ),
+    ]
+    concepts, report = extract_concepts_with_learning(articles)
+    report.crosstalk_pass = evaluate_crosstalk(concepts, base_concept_id="quantum_computing")
+    return {
+        "crosstalk_pass": report.crosstalk_pass,
+        "concepts_after_split": report.concepts_after_split,
+        "contradiction_splits": report.contradiction_splits,
+        "contradiction_events": report.contradiction_events,
+        "ingest_learning": report.to_dict(),
+    }
+
+
+def audit_ingest_from_articles(articles: list[Article] | None = None) -> dict[str, Any]:
+    rows = articles if articles is not None else load_articles()
+    concepts, traces, report = run_ingest_learning_pipeline(rows)
+    payload = report.to_dict()
+    payload.update(
+        {
+            "concepts": len(concepts),
+            "traces": len(traces),
+            "ingest_audit_text": format_ingest_audit_text(report),
+        }
+    )
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Train scale-style source-backed v.0.2 checkpoint")
     parser.add_argument("--checkpoint", default="checkpoints/saves/v.0.2")
     parser.add_argument("--pin-loaded", action="store_true")
+    parser.add_argument("--no-audit", action="store_true", help="Skip writing ingest audit report files")
     args = parser.parse_args(argv)
-    print(json.dumps(train_scale_ingest(args.checkpoint, pin_loaded=args.pin_loaded), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            train_scale_ingest(
+                args.checkpoint,
+                pin_loaded=args.pin_loaded,
+                write_audit=not args.no_audit,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

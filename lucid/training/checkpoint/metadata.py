@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from lucid.training.checkpoint.store import CheckpointState
@@ -24,6 +24,19 @@ STABILIZED = "stabilized"
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _parse_iso(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def default_metadata(
@@ -235,3 +248,92 @@ def promote_heat_tier(state: CheckpointState, object_id: str, object_type: str) 
     record["commit_permission"] = permission
     record["updated_at"] = utc_now_iso()
     return record
+
+
+def summarize_metadata_lifecycle(
+    state: CheckpointState,
+    *,
+    stale_quarantine_days: int = 30,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    stale_before = current - timedelta(days=max(0, int(stale_quarantine_days)))
+    objects = metadata_store(state).get("objects", {})
+    heat_tiers: dict[str, int] = {}
+    object_types: dict[str, int] = {}
+    stale_quarantine_candidates = 0
+    quantization_candidates = 0
+
+    for record in objects.values():
+        if not isinstance(record, dict):
+            continue
+        tier = str(record.get("heat_tier") or QUARANTINE)
+        object_type = str(record.get("object_type") or "unknown")
+        heat_tiers[tier] = heat_tiers.get(tier, 0) + 1
+        object_types[object_type] = object_types.get(object_type, 0) + 1
+        if bool(record.get("quantization_candidate")):
+            quantization_candidates += 1
+        updated = _parse_iso(record.get("updated_at") or record.get("created_at"))
+        if tier == QUARANTINE and updated is not None and updated < stale_before:
+            stale_quarantine_candidates += 1
+
+    return {
+        "objects": len(objects) if isinstance(objects, dict) else 0,
+        "heat_tiers": dict(sorted(heat_tiers.items())),
+        "object_types": dict(sorted(object_types.items())),
+        "stale_quarantine_days": max(0, int(stale_quarantine_days)),
+        "stale_quarantine_candidates": stale_quarantine_candidates,
+        "quantization_candidates": quantization_candidates,
+    }
+
+
+def archive_stale_quarantine(
+    state: CheckpointState,
+    *,
+    max_age_days: int = 30,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Archive unsupported quarantine objects that never earned evidence.
+
+    Supported, contradicted, or shadow-tested objects remain in quarantine so
+    safety-critical uncertainty is not lost by a cleanup pass.
+    """
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cutoff = current - timedelta(days=max(0, int(max_age_days)))
+    archived: list[dict[str, Any]] = []
+    objects = metadata_store(state).get("objects", {})
+    if not isinstance(objects, dict):
+        return archived
+
+    for object_id, record in objects.items():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("heat_tier") or QUARANTINE) != QUARANTINE:
+            continue
+        evidence_count = (
+            int(record.get("support_count", 0) or 0)
+            + int(record.get("shadow_pass_count", 0) or 0)
+            + int(record.get("target_fix_count", 0) or 0)
+            + int(record.get("contradiction_count", 0) or 0)
+        )
+        if evidence_count > 0:
+            continue
+        updated = _parse_iso(record.get("updated_at") or record.get("created_at"))
+        if updated is None or updated >= cutoff:
+            continue
+        record["heat_tier"] = ARCHIVED
+        record["commit_permission"] = SUPPORT_ONLY
+        record["lifecycle_reason"] = "stale_quarantine_ttl_expired"
+        record["archived_at"] = current.replace(microsecond=0).isoformat()
+        record["updated_at"] = record["archived_at"]
+        archived.append(
+            {
+                "object_id": str(object_id),
+                "object_type": str(record.get("object_type") or ""),
+                "previous_heat_tier": QUARANTINE,
+                "heat_tier": ARCHIVED,
+                "reason": record["lifecycle_reason"],
+            }
+        )
+    return archived

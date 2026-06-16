@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from math import log2
 from pathlib import Path
@@ -19,14 +20,17 @@ from lucid.ir.dmf import (
     TraceCluster,
 )
 from lucid.cognition.reasoning.cue_routes import competing_cue_keys
-from lucid.memory.cue_match import best_affinity_for_cue
+from lucid.memory.cue_match import best_affinity_for_cue, cue_match_tokens
 from lucid.ir.serde import to_dict
 from lucid.runtime.paths import DEFAULT_AUDIT_DMF, resolve_checkpoint, resolve_train_path
 from lucid.training.checkpoint.slots import resolve_checkpoint_ref
+from lucid.training.source_context import VENDOR_CUE_TO_SOURCE
 
 # DMF emits activated traces (capped by compute max_active_traces); lucidity decides winners.
 DMF_ACTIVATION_FLOOR_PERCENTILE = 0.05  # drop bottom 5% of scored activations (top ~95% band)
 DMF_MIN_ACTIVATION_SCORE = 0.0
+DMF_FUZZY_CANDIDATE_MULTIPLIER = 16
+DMF_MIN_FUZZY_CANDIDATES = 64
 
 
 @dataclass(slots=True)
@@ -64,6 +68,7 @@ class DmfTraceRecord:
     failure_count: int = 0
     created_from_cues: list[str] = field(default_factory=list)
     created_from_examples: list[str] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
     description: str = ""
     last_update_summary: str = ""
 
@@ -96,9 +101,12 @@ def trace_record_from_store(record: dict[str, object]) -> DmfTraceRecord:
     created_from = record.get("created_from_cues") or record.get("created_from_episodes") or []
     if not isinstance(created_from, list):
         created_from = []
-    examples = record.get("created_from_examples") or []
+    examples = record.get("created_from_examples") or record.get("source_refs") or []
     if not isinstance(examples, list):
         examples = []
+    source_refs = record.get("source_refs") or examples
+    if not isinstance(source_refs, list):
+        source_refs = []
 
     return DmfTraceRecord(
         trace_id=str(record.get("trace_id") or ""),
@@ -115,6 +123,7 @@ def trace_record_from_store(record: dict[str, object]) -> DmfTraceRecord:
         failure_count=int(record.get("failure_count") or 0),
         created_from_cues=[str(item) for item in created_from if str(item)],
         created_from_examples=[str(item) for item in examples if str(item)],
+        source_refs=[str(item) for item in source_refs if str(item)],
         description=str(record.get("description") or ""),
         last_update_summary=str(record.get("last_update_summary") or ""),
     )
@@ -171,6 +180,8 @@ class DynamicMemoryField:
         self._trace_id_index: dict[str, int] = {}
         self._cluster_index: dict[str, set[int]] = {}
         self._trace_index_keys: dict[int, set[str]] = {}
+        self._cue_token_index: dict[str, set[int]] = {}
+        self._trace_index_tokens: dict[int, set[str]] = {}
         self._trace_index_id: dict[int, str] = {}
         self._trace_index_cluster: dict[int, str] = {}
         self._indexed_trace_count = 0
@@ -196,6 +207,8 @@ class DynamicMemoryField:
         self._trace_id_index.clear()
         self._cluster_index.clear()
         self._trace_index_keys.clear()
+        self._cue_token_index.clear()
+        self._trace_index_tokens.clear()
         self._trace_index_id.clear()
         self._trace_index_cluster.clear()
         self._indexed_trace_count = 0
@@ -215,6 +228,14 @@ class DynamicMemoryField:
                 if not indices:
                     self._cue_index.pop(key, None)
 
+        old_tokens = self._trace_index_tokens.pop(idx, set())
+        for token in old_tokens:
+            indices = self._cue_token_index.get(token)
+            if indices is not None:
+                indices.discard(idx)
+                if not indices:
+                    self._cue_token_index.pop(token, None)
+
         old_trace_id = self._trace_index_id.pop(idx, "")
         if old_trace_id and self._trace_id_index.get(old_trace_id) == idx:
             self._trace_id_index.pop(old_trace_id, None)
@@ -232,6 +253,10 @@ class DynamicMemoryField:
         self._trace_index_keys[idx] = keys
         for key in keys:
             self._cue_index.setdefault(key, set()).add(idx)
+        tokens = {token for key in keys for token in cue_match_tokens(key)}
+        self._trace_index_tokens[idx] = tokens
+        for token in tokens:
+            self._cue_token_index.setdefault(token, set()).add(idx)
 
         trace_id = record.trace_id.strip()
         if trace_id:
@@ -396,6 +421,13 @@ class DynamicMemoryField:
         if matched == 0:
             score = max(score, 0.02)
 
+        for cue_key, weight in cue_weights.items():
+            if weight <= 0:
+                continue
+            source_id = VENDOR_CUE_TO_SOURCE.get(cue_key)
+            if source_id and source_id in record.source_refs:
+                score += min(0.22, 0.18 * float(weight))
+
         score = max(0.0, min(1.0, score))
         return min(score, provisional_cap)
 
@@ -480,12 +512,19 @@ class DynamicMemoryField:
     ) -> set[int]:
         self.index_new_traces()
         candidates: set[int] = set()
+        fuzzy_cap = max(max_traces * DMF_FUZZY_CANDIDATE_MULTIPLIER, DMF_MIN_FUZZY_CANDIDATES)
 
         for cue_key in cue_weights:
             candidates.update(self._cue_index.get(cue_key, set()))
-            for idx, record in enumerate(self.tracebank):
-                if best_affinity_for_cue(cue_key, record.cue_affinities) > 0.0:
-                    candidates.add(idx)
+            token_hits: Counter[int] = Counter()
+            for token in cue_match_tokens(cue_key):
+                for idx in self._cue_token_index.get(token, set()):
+                    token_hits[idx] += 1
+            for idx, _count in sorted(token_hits.items(), key=lambda item: (-item[1], item[0]))[:fuzzy_cap]:
+                if 0 <= idx < len(self.tracebank):
+                    record = self.tracebank[idx]
+                    if best_affinity_for_cue(cue_key, record.cue_affinities) > 0.0:
+                        candidates.add(idx)
 
         if cue_cloud is not None:
             for cue_keys in competing_cue_keys(cue_cloud).values():
@@ -673,6 +712,7 @@ class DynamicMemoryField:
                 "selected_traces": len(active_traces),
                 "compute_limit": max_traces,
                 "retrieval_mode": "activated_threshold_filter",
+                "candidate_query_mode": "indexed_exact_token_bounded",
                 "activation_floor_percentile": DMF_ACTIVATION_FLOOR_PERCENTILE,
                 "max_emit_traces": max_traces,
                 "route_diversity_seeded": route_seeded,

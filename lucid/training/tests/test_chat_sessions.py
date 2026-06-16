@@ -135,6 +135,20 @@ def test_chat_memory_cli_smoke(tmp_path: Path, capsys):
     assert data["memories"] == []
 
 
+def test_chat_delete_removes_session_directory(tmp_path: Path, capsys):
+    audit_dir = tmp_path / "chat"
+    main(["chat", "start", "--session-id", "delete-me", "--audit-dir", str(audit_dir)])
+    capsys.readouterr()
+    session_dir = audit_dir / "delete-me"
+    assert session_dir.is_dir()
+
+    assert main(["chat", "delete", "--session-id", "delete-me", "--audit-dir", str(audit_dir)]) == 0
+    capsys.readouterr()
+    assert not session_dir.exists()
+    assert main(["chat", "list", "--audit-dir", str(audit_dir)]) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
 def test_chat_control_turns_do_not_leak_prior_domain_answers(tmp_path: Path):
     audit_dir = tmp_path / "chat"
     session_id = "control-turns"

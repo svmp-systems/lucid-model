@@ -9,7 +9,11 @@ from lucid.ir.cue import CueCloud, RelationalActivationRequest, TraceActivationR
 from lucid.ir.dmf import DmfInput
 from lucid.cognition.memory.dmf import DmfTraceRecord, DynamicMemoryField
 from lucid.memory.cue_match import best_affinity_for_cue
-from lucid.training.learn.dmf import apply_lucidity_trace_feedback, learn_from_episode
+from lucid.training.learn.dmf import (
+    MAX_LEARNED_LINK_DEGREE,
+    apply_lucidity_trace_feedback,
+    learn_from_episode,
+)
 
 
 def test_dmf_returns_sparse_activation_and_clusters():
@@ -390,6 +394,56 @@ def test_dmf_retrieval_uses_sparse_candidate_index():
     assert [trace.trace_id for trace in out.active_traces] == ["t-match"]
     assert out.audit_log["candidate_traces"] == 1
     assert out.audit_log["retrieval_mode"] == "activated_threshold_filter"
+    assert out.audit_log["candidate_query_mode"] == "indexed_exact_token_bounded"
+
+
+def test_dmf_fuzzy_retrieval_uses_token_index_without_global_scan():
+    tracebank = [
+        DmfTraceRecord(trace_id=f"t-noise-{idx}", cue_affinities={"unrelated": 1.0})
+        for idx in range(20)
+    ]
+    tracebank.append(
+        DmfTraceRecord(trace_id="t-token-match", cue_affinities={"some_money": 0.9})
+    )
+    dmf = DynamicMemoryField(tracebank=tracebank)
+
+    out = dmf.run(
+        DmfInput(
+            cue_cloud=CueCloud(
+                primitive_trace_activations=[
+                    TraceActivationRequest(trace_id="money", weight=0.9),
+                ]
+            ),
+            compute_policy=ComputePolicy(max_active_traces=3),
+        )
+    )
+
+    assert [trace.trace_id for trace in out.active_traces] == ["t-token-match"]
+    assert out.audit_log["candidate_traces"] == 1
+
+
+def test_dmf_learning_caps_coactivation_degree():
+    dmf = DynamicMemoryField()
+    learn_from_episode(
+        dmf,
+        CueCloud(
+            primitive_trace_activations=[
+                TraceActivationRequest(trace_id=f"cue_{idx}", weight=0.5)
+                for idx in range(MAX_LEARNED_LINK_DEGREE + 8)
+            ]
+        ),
+    )
+
+    assert dmf.tracebank
+    assert all(
+        len(trace.coactivation_links) <= MAX_LEARNED_LINK_DEGREE
+        for trace in dmf.tracebank
+    )
+    assert any(
+        event.details.get("pruned_link_count", 0) > 0
+        for event in dmf.audit_events
+        if event.event_type == "link_coactivation"
+    )
 
 
 def test_dmf_winner_learning_reinforces_only_relevant_existing_cues():

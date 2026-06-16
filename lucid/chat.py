@@ -11,6 +11,7 @@ from lucid.audit.chat import (
     ChatAuditTurn,
     append_chat_turn,
     build_session_context,
+    delete_chat_session,
     load_chat_record,
     load_session_memory,
     memory_reply_for_text,
@@ -63,6 +64,10 @@ def list_sessions(*, audit_dir: str | Path = "audit/chat") -> list[str]:
     if not root.exists():
         return []
     return sorted(path.name for path in root.iterdir() if (path / "session.json").exists())
+
+
+def delete_session(*, session_id: str, audit_dir: str | Path = "audit/chat") -> None:
+    delete_chat_session(audit_dir, session_id)
 
 
 def run_chat_turn(

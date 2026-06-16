@@ -294,6 +294,49 @@ def test_binding_marks_competing_cue_routes_unresolved() -> None:
     }
 
 
+def test_binding_prefers_compound_cue_frame_over_broad_token_frames() -> None:
+    graph = PerceptualEvidenceGraph(
+        candidate_units=[
+            CandidateUnit("u_quantum", "quantum", "noun", position_or_time="0"),
+            CandidateUnit("u_computing", "computing", "noun", position_or_time="8"),
+        ],
+    )
+    out = run_binding(
+        BindingInput(
+            dmf_output=DmfOutput(
+                active_traces=[
+                    ActiveTrace("t_term_quantum_computing", 0.69, cluster_id="quantum_computing"),
+                    ActiveTrace("t_claim_quantum_circuit", 0.52, cluster_id="quantum_circuit"),
+                ],
+                coverage_score=0.75,
+            ),
+            perceptual_evidence_graph=graph,
+            cue_cloud=CueCloud(
+                primitive_trace_activations=[
+                    TraceActivationRequest("quantum", 0.62, ["u_quantum"]),
+                    TraceActivationRequest("computing", 0.62, ["u_computing"]),
+                    TraceActivationRequest(
+                        "quantum_computing",
+                        0.59,
+                        ["u_computing", "u_quantum"],
+                    ),
+                ],
+            ),
+        )
+    )
+
+    compound = [
+        frame
+        for frame in out.candidate_frames
+        if frame.frame_id.startswith("local_compound_quantum_computing")
+    ]
+    assert compound
+    assert len(out.candidate_frames) == 1
+    assert not any(frame.frame_id.startswith("local_u_quantum__") for frame in out.candidate_frames)
+    assert compound[0].supporting_trace_ids == ["t_term_quantum_computing"]
+    assert not compound[0].conflicting_trace_ids
+
+
 def test_binding_loads_concept_graph_operators_from_quantum_checkpoint(tmp_path: Path) -> None:
     checkpoint = tmp_path / "quantum_checkpoint"
     train_quantum_articles(checkpoint)

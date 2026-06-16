@@ -15,3 +15,6 @@
 # make every module auditable and connected to lucid-model/lucid/audit/
 
 # for every new component/module, add a tiny direct manual smoke command through the universal lucid CLI.
+
+# do not just make random checkpoints. checkpoints are supposed to be specific, not spammed. 1 checkpoint per significant training run with a meaningful change. try to update old checkpoints otherwise. 
+

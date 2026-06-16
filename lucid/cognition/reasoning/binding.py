@@ -15,6 +15,7 @@ from lucid.cognition.reasoning.cue_routes import (
 )
 from lucid.runtime.paths import resolve_checkpoint
 from lucid.training.checkpoint.slots import resolve_checkpoint_ref
+from lucid.training.source_context import MECHANISM_VERB_SURFACES, VENDOR_CUE_TO_SOURCE
 from lucid.ir.binding import (
     BindingInput,
     BindingOutput,
@@ -116,13 +117,27 @@ class BindingOperator:
         competing_units = _competing_unit_ids(cue, unit_traces, dmf.active_traces)
 
         seeds = _collect_seeds(graph, inp.prior_candidate_frames, affordances)
+        mechanism_seeds = _mechanism_source_seeds(
+            graph=graph,
+            unit_by_id=unit_by_id,
+            concepts=self._concepts,
+            active_traces=dmf.active_traces,
+        )
+        compound_seeds, compound_covered_units = _compound_activation_seeds(
+            cue=cue,
+            cue_to_trace=cue_to_trace,
+            unit_by_id=unit_by_id,
+            active_traces=dmf.active_traces,
+        )
         local_seeds = _local_reading_seeds(
             graph=graph,
             unit_by_id=unit_by_id,
             unit_traces=unit_traces,
             active_traces=dmf.active_traces,
             competing_units=competing_units,
+            covered_units=compound_covered_units,
         )
+        local_seeds = [*mechanism_seeds, *compound_seeds, *local_seeds]
         seeds.extend(local_seeds)
         if inp.prior_candidate_frames and self.config.widen_on_recheck:
             seeds.extend(_seeds_from_prior_frames(inp.prior_candidate_frames))
@@ -144,6 +159,7 @@ class BindingOperator:
             if frame.confidence >= self.config.min_frame_confidence:
                 frames.append(frame)
 
+        frames = _prune_shadow_unresolved_frames(frames, unit_by_id)
         frames = _dedupe_frames(frames)
         if not frames and dmf.active_traces:
             frames.append(
@@ -232,6 +248,9 @@ class BindingOperator:
                 supporting.append(forced_trace)
                 continue
             if unit_id in competing_units:
+                surface = normalize_cue_key(unit.surface)
+                if surface in MECHANISM_VERB_SURFACES:
+                    continue
                 unresolved.append(f"{normalize_cue_key(unit.surface)}_sense")
                 continue
 
@@ -242,17 +261,18 @@ class BindingOperator:
             slot_assignments[slot_id] = trace_id
             supporting.append(trace_id)
 
-        conflicting = sorted(
-            set(_conflicting_traces_for_frame(supporting, dmf))
-            | set(
-                _conflicting_traces_from_unit_routes(
-                    member_refs,
-                    unit_traces,
-                    competing_units,
-                    dmf,
-                )
+        route_conflicts = (
+            []
+            if seed.source == "compound_trace_activation"
+            else _conflicting_traces_from_unit_routes(
+                member_refs,
+                unit_traces,
+                competing_units,
+                dmf,
+                supporting=supporting,
             )
         )
+        conflicting = sorted(set(_conflicting_traces_for_frame(supporting, dmf)) | set(route_conflicts))
 
         confidence = _frame_confidence(
             seed,
@@ -968,10 +988,12 @@ def _local_reading_seeds(
     unit_traces: dict[str, dict[str, float]],
     active_traces: list[ActiveTrace],
     competing_units: set[str],
+    covered_units: set[str] | None = None,
 ) -> list[FrameSeed]:
     ambiguous = _ambiguous_unit_ids(graph)
+    covered = set(covered_units or set())
     focus_units = sorted(
-        (competing_units & ambiguous) or competing_units,
+        ((competing_units & ambiguous) or competing_units) - covered,
         key=lambda unit_id: _position_key(unit_by_id[unit_id])
         if unit_id in unit_by_id
         else (0, unit_id, ""),
@@ -1008,6 +1030,181 @@ def _local_reading_seeds(
             )
             seen.add(seed_id)
     return seeds
+
+
+def _mechanism_source_seeds(
+    *,
+    graph: PerceptualEvidenceGraph,
+    unit_by_id: dict[str, CandidateUnit],
+    concepts: list[dict[str, Any]],
+    active_traces: list[ActiveTrace],
+) -> list[FrameSeed]:
+    surfaces: dict[str, str] = {}
+    for unit in graph.candidate_units:
+        key = normalize_cue_key(unit.surface)
+        if key:
+            surfaces[key] = unit.unit_id
+
+    vendor = next((cue for cue in VENDOR_CUE_TO_SOURCE if cue in surfaces), None)
+    if vendor is None or "quantum" not in surfaces:
+        return []
+    if not (set(surfaces) & MECHANISM_VERB_SURFACES or "how" in surfaces):
+        return []
+
+    source_id = VENDOR_CUE_TO_SOURCE[vendor]
+    trace_id = _find_mechanism_claim_trace(concepts, source_id, active_traces)
+    if not trace_id:
+        return []
+
+    member_units = [surfaces[vendor], surfaces["quantum"]]
+    for verb in MECHANISM_VERB_SURFACES:
+        if verb in surfaces:
+            member_units.append(surfaces[verb])
+    if "how" in surfaces:
+        member_units.append(surfaces["how"])
+    member_units = _dedupe_strings(member_units)
+
+    trace_slug = normalize_cue_key(trace_id) or _slug_frame_id(trace_id)
+    return [
+        FrameSeed(
+            seed_id=f"mechanism_{vendor}_quantum__{trace_slug}",
+            frame_type="mechanism_query",
+            unit_ids=set(member_units),
+            structural_tags=[
+                f"vendor:{vendor}",
+                f"source:{source_id}",
+                f"forced_trace:{trace_id}",
+            ],
+            source="mechanism_source_query",
+            forced_trace_assignments={unit_id: trace_id for unit_id in member_units},
+        )
+    ]
+
+
+def _find_mechanism_claim_trace(
+    concepts: list[dict[str, Any]],
+    source_id: str,
+    active_traces: list[ActiveTrace],
+) -> str:
+    active_ids = {trace.trace_id for trace in active_traces if trace.trace_id}
+    for concept_id in ("quantum_computer", "quantum_computing", "quantum_algorithm"):
+        concept = next((row for row in concepts if str(row.get("concept_id")) == concept_id), None)
+        if concept is None:
+            continue
+        for relation in concept.get("relations") or []:
+            if not isinstance(relation, dict):
+                continue
+            if str(relation.get("relation") or "") not in {"uses", "capability", "enables"}:
+                continue
+            refs = [str(ref) for ref in relation.get("source_refs") or [] if str(ref)]
+            if source_id not in refs:
+                continue
+            prefix = f"t_claim_{concept_id}_"
+            for trace in active_traces:
+                if trace.trace_id.startswith(prefix) and trace.trace_id in active_ids:
+                    return trace.trace_id
+    return ""
+
+
+def _compound_activation_seeds(
+    *,
+    cue: CueCloud,
+    cue_to_trace: dict[str, list[str]],
+    unit_by_id: dict[str, CandidateUnit],
+    active_traces: list[ActiveTrace],
+) -> tuple[list[FrameSeed], set[str]]:
+    active_ids = {trace.trace_id for trace in active_traces if trace.trace_id}
+    seeds: list[FrameSeed] = []
+    covered_units: set[str] = set()
+    seen: set[str] = set()
+
+    for req in cue.primitive_trace_activations:
+        refs = _dedupe_strings([ref for ref in req.evidence_refs if ref in unit_by_id])
+        if len(refs) < 2:
+            continue
+        cue_key = normalize_cue_key(req.trace_id)
+        trace_weights: dict[str, float] = {}
+        for trace_id in cue_to_trace.get(cue_key) or [req.trace_id]:
+            resolved = _resolve_trace_id(trace_id, cue_to_trace, active_traces)
+            if resolved not in active_ids:
+                continue
+            trace = next((item for item in active_traces if item.trace_id == resolved), None)
+            trace_weights[resolved] = max(
+                trace_weights.get(resolved, 0.0),
+                float(trace.activation if trace is not None else req.weight),
+            )
+        for resolved in _best_trace_per_cluster(trace_weights, active_traces):
+            trace_slug = normalize_cue_key(resolved) or _slug_frame_id(resolved)
+            cue_slug = cue_key or trace_slug
+            seed_id = f"local_compound_{cue_slug}__{trace_slug}"
+            if seed_id in seen:
+                continue
+            forced = {ref: resolved for ref in refs}
+            seeds.append(
+                FrameSeed(
+                    seed_id=seed_id,
+                    frame_type="local_reading",
+                    unit_ids=set(refs),
+                    structural_tags=[
+                        f"compound_cue:{cue_slug}",
+                        f"forced_trace:{resolved}",
+                    ],
+                    source="compound_trace_activation",
+                    forced_trace_assignments=forced,
+                )
+            )
+            covered_units.update(refs)
+            seen.add(seed_id)
+    return seeds, covered_units
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _prune_shadow_unresolved_frames(
+    frames: list[CandidateFrame],
+    unit_by_id: dict[str, CandidateUnit],
+) -> list[CandidateFrame]:
+    supported_spans = [
+        set(frame.member_evidence_refs)
+        for frame in frames
+        if frame.supporting_trace_ids and frame.member_evidence_refs
+    ]
+    if not supported_spans:
+        return frames
+    pruned: list[CandidateFrame] = []
+    for frame in frames:
+        members = set(frame.member_evidence_refs)
+        if (
+            frame.unresolved_slot_names
+            and not frame.supporting_trace_ids
+            and members
+            and not _span_has_event_anchor(members, unit_by_id)
+            and any(members.issubset(span) for span in supported_spans)
+        ):
+            continue
+        pruned.append(frame)
+    return pruned
+
+
+def _span_has_event_anchor(members: set[str], unit_by_id: dict[str, CandidateUnit]) -> bool:
+    for unit_id in members:
+        unit = unit_by_id.get(unit_id)
+        if unit is None:
+            continue
+        kind = normalize_cue_key(unit.kind_hint or "")
+        if kind in {"verb", "verb_span", "action", "predicate"} or _is_verb_like(unit):
+            return True
+    return False
 
 
 def _build_cue_to_trace_map(
@@ -1141,9 +1338,11 @@ def _conflicting_traces_from_unit_routes(
     competing_units: set[str],
     dmf: DmfOutput,
     *,
+    supporting: list[str] | None = None,
     min_weight: float = 0.12,
 ) -> list[str]:
     conflicts: set[str] = set()
+    support = set(supporting or [])
     active_ids = {trace.trace_id for trace in dmf.active_traces if trace.trace_id}
     for unit_id in member_refs:
         if unit_id not in competing_units:
@@ -1153,9 +1352,15 @@ def _conflicting_traces_from_unit_routes(
             for trace_id, weight in unit_traces.get(unit_id, {}).items()
             if trace_id in active_ids and weight >= min_weight
         ]
-        conflicts.update(strong)
-    conflicts.update(_conflicting_traces_for_frame(sorted(conflicts), dmf))
-    return sorted(conflicts)
+        conflicts.update(trace_id for trace_id in strong if trace_id not in support)
+    for signal in dmf.conflict_signals:
+        if not signal.trace_id_a or not signal.trace_id_b:
+            continue
+        if signal.trace_id_a in support and signal.trace_id_b in conflicts:
+            conflicts.add(signal.trace_id_b)
+        if signal.trace_id_b in support and signal.trace_id_a in conflicts:
+            conflicts.add(signal.trace_id_a)
+    return sorted(conflicts - support)
 
 
 def _slot_affinity_hints_for_unit(

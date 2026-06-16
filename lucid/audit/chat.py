@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,15 @@ def save_chat_record(audit_dir: str | Path, record: ChatRecord) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(to_dict(record), indent=2, sort_keys=True), encoding="utf-8")
     return path
+
+
+def delete_chat_session(audit_dir: str | Path, session_id: str) -> None:
+    """Remove a session directory and all of its on-disk audit artifacts."""
+    sid = _validate_session_id(session_id)
+    session_dir = _audit_root(audit_dir) / sid
+    if not session_dir.is_dir():
+        raise ValueError(f"session not found: {sid}")
+    shutil.rmtree(session_dir)
 
 
 def append_chat_turn(
