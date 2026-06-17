@@ -12,6 +12,29 @@ SOURCE_ENTITY_BY_ARTICLE: dict[str, str] = {
     "nist_quantum_explained": "NIST",
 }
 
+_RUNTIME_SOURCE_ENTITIES: dict[str, str] = {}
+
+
+def register_source_entities(mapping: dict[str, str]) -> None:
+    """Register per-run source entities discovered during ingest."""
+
+    for source_id, entity in mapping.items():
+        key = str(source_id or "").strip()
+        value = str(entity or "").strip()
+        if key and value:
+            _RUNTIME_SOURCE_ENTITIES[key] = value
+
+
+def clear_source_entities() -> None:
+    _RUNTIME_SOURCE_ENTITIES.clear()
+
+
+def source_entity_for_article(source_id: str) -> str:
+    key = str(source_id or "").strip()
+    if not key:
+        return ""
+    return _RUNTIME_SOURCE_ENTITIES.get(key) or SOURCE_ENTITY_BY_ARTICLE.get(key, "")
+
 VENDOR_CUE_TO_SOURCE: dict[str, str] = {
     "google": "google_quantum_ai_intro",
     "ibm": "ibm_quantum_computing",

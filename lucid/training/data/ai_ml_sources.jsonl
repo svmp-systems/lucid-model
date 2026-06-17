@@ -1,0 +1,100 @@
+{"source_id": "wiki_transformer", "title": "Wikipedia: Transformer (deep learning architecture)", "url": "https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_attention", "title": "Wikipedia: Attention (machine learning)", "url": "https://en.wikipedia.org/wiki/Attention_(machine_learning)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_artificial_neural_network", "title": "Wikipedia: Artificial neural network", "url": "https://en.wikipedia.org/wiki/Artificial_neural_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_deep_learning", "title": "Wikipedia: Deep learning", "url": "https://en.wikipedia.org/wiki/Deep_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_machine_learning", "title": "Wikipedia: Machine learning", "url": "https://en.wikipedia.org/wiki/Machine_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_energy_based_model", "title": "Wikipedia: Energy-based model", "url": "https://en.wikipedia.org/wiki/Energy-based_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_boltzmann_machine", "title": "Wikipedia: Boltzmann machine", "url": "https://en.wikipedia.org/wiki/Boltzmann_machine", "source_entity": "Wikipedia"}
+{"source_id": "wiki_hopfield_network", "title": "Wikipedia: Hopfield network", "url": "https://en.wikipedia.org/wiki/Hopfield_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_restricted_boltzmann_machine", "title": "Wikipedia: Restricted Boltzmann machine", "url": "https://en.wikipedia.org/wiki/Restricted_Boltzmann_machine", "source_entity": "Wikipedia"}
+{"source_id": "wiki_backpropagation", "title": "Wikipedia: Backpropagation", "url": "https://en.wikipedia.org/wiki/Backpropagation", "source_entity": "Wikipedia"}
+{"source_id": "wiki_gradient_descent", "title": "Wikipedia: Gradient descent", "url": "https://en.wikipedia.org/wiki/Gradient_descent", "source_entity": "Wikipedia"}
+{"source_id": "wiki_reinforcement_learning", "title": "Wikipedia: Reinforcement learning", "url": "https://en.wikipedia.org/wiki/Reinforcement_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_large_language_model", "title": "Wikipedia: Large language model", "url": "https://en.wikipedia.org/wiki/Large_language_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_word_embedding", "title": "Wikipedia: Word embedding", "url": "https://en.wikipedia.org/wiki/Word_embedding", "source_entity": "Wikipedia"}
+{"source_id": "wiki_self_attention", "title": "Wikipedia: Self-attention", "url": "https://en.wikipedia.org/wiki/Self-attention", "source_entity": "Wikipedia"}
+{"source_id": "wiki_encoder%e2%80%93decoder_model", "title": "Wikipedia: Encoder-decoder model", "url": "https://en.wikipedia.org/wiki/Encoder%E2%80%93decoder_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_generative_artificial_intelligence", "title": "Wikipedia: Generative artificial intelligence", "url": "https://en.wikipedia.org/wiki/Generative_artificial_intelligence", "source_entity": "Wikipedia"}
+{"source_id": "wiki_recurrent_neural_network", "title": "Wikipedia: Recurrent neural network", "url": "https://en.wikipedia.org/wiki/Recurrent_neural_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_convolutional_neural_network", "title": "Wikipedia: Convolutional neural network", "url": "https://en.wikipedia.org/wiki/Convolutional_neural_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_long_short_term_memory", "title": "Wikipedia: Long short-term memory", "url": "https://en.wikipedia.org/wiki/Long_short-term_memory", "source_entity": "Wikipedia"}
+{"source_id": "wiki_gated_recurrent_unit", "title": "Wikipedia: Gated recurrent unit", "url": "https://en.wikipedia.org/wiki/Gated_recurrent_unit", "source_entity": "Wikipedia"}
+{"source_id": "wiki_bert", "title": "Wikipedia: BERT (language model)", "url": "https://en.wikipedia.org/wiki/BERT_(language_model)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_gpt_4", "title": "Wikipedia: GPT-4", "url": "https://en.wikipedia.org/wiki/GPT-4", "source_entity": "Wikipedia"}
+{"source_id": "wiki_openai", "title": "Wikipedia: OpenAI", "url": "https://en.wikipedia.org/wiki/OpenAI", "source_entity": "Wikipedia"}
+{"source_id": "wiki_foundation_model", "title": "Wikipedia: Foundation model", "url": "https://en.wikipedia.org/wiki/Foundation_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_fine_tuning", "title": "Wikipedia: Fine-tuning (deep learning)", "url": "https://en.wikipedia.org/wiki/Fine-tuning_(deep_learning)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_transfer_learning", "title": "Wikipedia: Transfer learning", "url": "https://en.wikipedia.org/wiki/Transfer_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_supervised_learning", "title": "Wikipedia: Supervised learning", "url": "https://en.wikipedia.org/wiki/Supervised_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_unsupervised_learning", "title": "Wikipedia: Unsupervised learning", "url": "https://en.wikipedia.org/wiki/Unsupervised_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_semi_supervised_learning", "title": "Wikipedia: Semi-supervised learning", "url": "https://en.wikipedia.org/wiki/Semi-supervised_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_self_supervised_learning", "title": "Wikipedia: Self-supervised learning", "url": "https://en.wikipedia.org/wiki/Self-supervised_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_contrastive_learning", "title": "Wikipedia: Contrastive learning", "url": "https://en.wikipedia.org/wiki/Contrastive_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_diffusion_model", "title": "Wikipedia: Diffusion model", "url": "https://en.wikipedia.org/wiki/Diffusion_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_variational_autoencoder", "title": "Wikipedia: Variational autoencoder", "url": "https://en.wikipedia.org/wiki/Variational_autoencoder", "source_entity": "Wikipedia"}
+{"source_id": "wiki_autoencoder", "title": "Wikipedia: Autoencoder", "url": "https://en.wikipedia.org/wiki/Autoencoder", "source_entity": "Wikipedia"}
+{"source_id": "wiki_generative_adversarial_network", "title": "Wikipedia: Generative adversarial network", "url": "https://en.wikipedia.org/wiki/Generative_adversarial_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_markov_random_field", "title": "Wikipedia: Markov random field", "url": "https://en.wikipedia.org/wiki/Markov_random_field", "source_entity": "Wikipedia"}
+{"source_id": "wiki_graph_neural_network", "title": "Wikipedia: Graph neural network", "url": "https://en.wikipedia.org/wiki/Graph_neural_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_knowledge_graph", "title": "Wikipedia: Knowledge graph", "url": "https://en.wikipedia.org/wiki/Knowledge_graph", "source_entity": "Wikipedia"}
+{"source_id": "wiki_natural_language_processing", "title": "Wikipedia: Natural language processing", "url": "https://en.wikipedia.org/wiki/Natural_language_processing", "source_entity": "Wikipedia"}
+{"source_id": "wiki_computer_vision", "title": "Wikipedia: Computer vision", "url": "https://en.wikipedia.org/wiki/Computer_vision", "source_entity": "Wikipedia"}
+{"source_id": "wiki_speech_recognition", "title": "Wikipedia: Speech recognition", "url": "https://en.wikipedia.org/wiki/Speech_recognition", "source_entity": "Wikipedia"}
+{"source_id": "wiki_tokenization", "title": "Wikipedia: Tokenization (computational linguistics)", "url": "https://en.wikipedia.org/wiki/Tokenization_(computational_linguistics)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_softmax_function", "title": "Wikipedia: Softmax function", "url": "https://en.wikipedia.org/wiki/Softmax_function", "source_entity": "Wikipedia"}
+{"source_id": "wiki_loss_function", "title": "Wikipedia: Loss function", "url": "https://en.wikipedia.org/wiki/Loss_function", "source_entity": "Wikipedia"}
+{"source_id": "wiki_cross_entropy", "title": "Wikipedia: Cross-entropy", "url": "https://en.wikipedia.org/wiki/Cross-entropy", "source_entity": "Wikipedia"}
+{"source_id": "wiki_stochastic_gradient_descent", "title": "Wikipedia: Stochastic gradient descent", "url": "https://en.wikipedia.org/wiki/Stochastic_gradient_descent", "source_entity": "Wikipedia"}
+{"source_id": "wiki_adam", "title": "Wikipedia: Adam (optimiser)", "url": "https://en.wikipedia.org/wiki/Adam_(optimiser)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_batch_normalization", "title": "Wikipedia: Batch normalization", "url": "https://en.wikipedia.org/wiki/Batch_normalization", "source_entity": "Wikipedia"}
+{"source_id": "wiki_dropout", "title": "Wikipedia: Dropout (neural networks)", "url": "https://en.wikipedia.org/wiki/Dropout_(neural_networks)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_overfitting", "title": "Wikipedia: Overfitting", "url": "https://en.wikipedia.org/wiki/Overfitting", "source_entity": "Wikipedia"}
+{"source_id": "wiki_regularization", "title": "Wikipedia: Regularization (mathematics)", "url": "https://en.wikipedia.org/wiki/Regularization_(mathematics)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_hyperparameter_optimization", "title": "Wikipedia: Hyperparameter optimization", "url": "https://en.wikipedia.org/wiki/Hyperparameter_optimization", "source_entity": "Wikipedia"}
+{"source_id": "wiki_feature_learning", "title": "Wikipedia: Feature learning", "url": "https://en.wikipedia.org/wiki/Feature_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_representation_learning", "title": "Wikipedia: Representation learning", "url": "https://en.wikipedia.org/wiki/Representation_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_embedding", "title": "Wikipedia: Embedding (machine learning)", "url": "https://en.wikipedia.org/wiki/Embedding_(machine_learning)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_vector_database", "title": "Wikipedia: Vector database", "url": "https://en.wikipedia.org/wiki/Vector_database", "source_entity": "Wikipedia"}
+{"source_id": "wiki_retrieval_augmented_generation", "title": "Wikipedia: Retrieval-augmented generation", "url": "https://en.wikipedia.org/wiki/Retrieval-augmented_generation", "source_entity": "Wikipedia"}
+{"source_id": "wiki_prompt_engineering", "title": "Wikipedia: Prompt engineering", "url": "https://en.wikipedia.org/wiki/Prompt_engineering", "source_entity": "Wikipedia"}
+{"source_id": "wiki_chain_of_thought_prompting", "title": "Wikipedia: Chain-of-thought prompting", "url": "https://en.wikipedia.org/wiki/Chain-of-thought_prompting", "source_entity": "Wikipedia"}
+{"source_id": "wiki_in_context_learning", "title": "Wikipedia: In-context learning", "url": "https://en.wikipedia.org/wiki/In-context_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_few_shot_learning", "title": "Wikipedia: Few-shot learning", "url": "https://en.wikipedia.org/wiki/Few-shot_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_zero_shot_learning", "title": "Wikipedia: Zero-shot learning", "url": "https://en.wikipedia.org/wiki/Zero-shot_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_mixture_of_experts", "title": "Wikipedia: Mixture of experts", "url": "https://en.wikipedia.org/wiki/Mixture_of_experts", "source_entity": "Wikipedia"}
+{"source_id": "wiki_multi_head_attention", "title": "Wikipedia: Multi-head attention", "url": "https://en.wikipedia.org/wiki/Multi-head_attention", "source_entity": "Wikipedia"}
+{"source_id": "wiki_positional_encoding", "title": "Wikipedia: Positional encoding", "url": "https://en.wikipedia.org/wiki/Positional_encoding", "source_entity": "Wikipedia"}
+{"source_id": "wiki_layer_normalization", "title": "Wikipedia: Layer normalization", "url": "https://en.wikipedia.org/wiki/Layer_normalization", "source_entity": "Wikipedia"}
+{"source_id": "wiki_feedforward_neural_network", "title": "Wikipedia: Feedforward neural network", "url": "https://en.wikipedia.org/wiki/Feedforward_neural_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_activation_function", "title": "Wikipedia: Activation function", "url": "https://en.wikipedia.org/wiki/Activation_function", "source_entity": "Wikipedia"}
+{"source_id": "wiki_sigmoid_function", "title": "Wikipedia: Sigmoid function", "url": "https://en.wikipedia.org/wiki/Sigmoid_function", "source_entity": "Wikipedia"}
+{"source_id": "wiki_relu", "title": "Wikipedia: ReLU", "url": "https://en.wikipedia.org/wiki/ReLU", "source_entity": "Wikipedia"}
+{"source_id": "wiki_perceptron", "title": "Wikipedia: Perceptron", "url": "https://en.wikipedia.org/wiki/Perceptron", "source_entity": "Wikipedia"}
+{"source_id": "wiki_support_vector_machine", "title": "Wikipedia: Support vector machine", "url": "https://en.wikipedia.org/wiki/Support_vector_machine", "source_entity": "Wikipedia"}
+{"source_id": "wiki_decision_tree", "title": "Wikipedia: Decision tree", "url": "https://en.wikipedia.org/wiki/Decision_tree", "source_entity": "Wikipedia"}
+{"source_id": "wiki_random_forest", "title": "Wikipedia: Random forest", "url": "https://en.wikipedia.org/wiki/Random_forest", "source_entity": "Wikipedia"}
+{"source_id": "wiki_bayesian_network", "title": "Wikipedia: Bayesian network", "url": "https://en.wikipedia.org/wiki/Bayesian_network", "source_entity": "Wikipedia"}
+{"source_id": "wiki_markov_chain", "title": "Wikipedia: Markov chain", "url": "https://en.wikipedia.org/wiki/Markov_chain", "source_entity": "Wikipedia"}
+{"source_id": "wiki_hidden_markov_model", "title": "Wikipedia: Hidden Markov model", "url": "https://en.wikipedia.org/wiki/Hidden_Markov_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_expectation%e2%80%93maximization_algorithm", "title": "Wikipedia: Expectation-maximization algorithm", "url": "https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm", "source_entity": "Wikipedia"}
+{"source_id": "wiki_monte_carlo_method", "title": "Wikipedia: Monte Carlo method", "url": "https://en.wikipedia.org/wiki/Monte_Carlo_method", "source_entity": "Wikipedia"}
+{"source_id": "wiki_markov_chain_monte_carlo", "title": "Wikipedia: Markov chain Monte Carlo", "url": "https://en.wikipedia.org/wiki/Markov_chain_Monte_Carlo", "source_entity": "Wikipedia"}
+{"source_id": "wiki_simulated_annealing", "title": "Wikipedia: Simulated annealing", "url": "https://en.wikipedia.org/wiki/Simulated_annealing", "source_entity": "Wikipedia"}
+{"source_id": "wiki_mean_field_theory", "title": "Wikipedia: Mean field theory", "url": "https://en.wikipedia.org/wiki/Mean_field_theory", "source_entity": "Wikipedia"}
+{"source_id": "wiki_statistical_mechanics", "title": "Wikipedia: Statistical mechanics", "url": "https://en.wikipedia.org/wiki/Statistical_mechanics", "source_entity": "Wikipedia"}
+{"source_id": "wiki_ising_model", "title": "Wikipedia: Ising model", "url": "https://en.wikipedia.org/wiki/Ising_model", "source_entity": "Wikipedia"}
+{"source_id": "wiki_spin_glass", "title": "Wikipedia: Spin glass", "url": "https://en.wikipedia.org/wiki/Spin_glass", "source_entity": "Wikipedia"}
+{"source_id": "wiki_neural_network", "title": "Wikipedia: Neural network (machine learning)", "url": "https://en.wikipedia.org/wiki/Neural_network_(machine_learning)", "source_entity": "Wikipedia"}
+{"source_id": "wiki_deep_reinforcement_learning", "title": "Wikipedia: Deep reinforcement learning", "url": "https://en.wikipedia.org/wiki/Deep_reinforcement_learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_q_learning", "title": "Wikipedia: Q-learning", "url": "https://en.wikipedia.org/wiki/Q-learning", "source_entity": "Wikipedia"}
+{"source_id": "wiki_policy_gradient_method", "title": "Wikipedia: Policy gradient method", "url": "https://en.wikipedia.org/wiki/Policy_gradient_method", "source_entity": "Wikipedia"}
+{"source_id": "wiki_actor_critic_algorithm", "title": "Wikipedia: Actor-critic algorithm", "url": "https://en.wikipedia.org/wiki/Actor-critic_algorithm", "source_entity": "Wikipedia"}
+{"source_id": "wiki_proximal_policy_optimization", "title": "Wikipedia: Proximal policy optimization", "url": "https://en.wikipedia.org/wiki/Proximal_policy_optimization", "source_entity": "Wikipedia"}
+{"source_id": "wiki_alphago", "title": "Wikipedia: AlphaGo", "url": "https://en.wikipedia.org/wiki/AlphaGo", "source_entity": "Wikipedia"}
+{"source_id": "wiki_artificial_general_intelligence", "title": "Wikipedia: Artificial general intelligence", "url": "https://en.wikipedia.org/wiki/Artificial_general_intelligence", "source_entity": "Wikipedia"}
+{"source_id": "wiki_artificial_intelligence", "title": "Wikipedia: Artificial intelligence", "url": "https://en.wikipedia.org/wiki/Artificial_intelligence", "source_entity": "Wikipedia"}
+{"source_id": "wiki_turing_test", "title": "Wikipedia: Turing test", "url": "https://en.wikipedia.org/wiki/Turing_test", "source_entity": "Wikipedia"}
+{"source_id": "wiki_explainable_artificial_intelligence", "title": "Wikipedia: Explainable artificial intelligence", "url": "https://en.wikipedia.org/wiki/Explainable_artificial_intelligence", "source_entity": "Wikipedia"}
+{"source_id": "wiki_ai_alignment", "title": "Wikipedia: AI alignment", "url": "https://en.wikipedia.org/wiki/AI_alignment", "source_entity": "Wikipedia"}
+{"source_id": "wiki_ai_safety", "title": "Wikipedia: AI safety", "url": "https://en.wikipedia.org/wiki/AI_safety", "source_entity": "Wikipedia"}
+{"source_id": "wiki_hallucination", "title": "Wikipedia: Hallucination (artificial intelligence)", "url": "https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence)", "source_entity": "Wikipedia"}

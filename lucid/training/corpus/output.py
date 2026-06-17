@@ -66,6 +66,7 @@ def build_phase1_pack(out_dir: Path | str, *, seed: int = 42) -> list[Episode]:
 
 GENERAL_LANGUAGE_COUNTS: dict[str, int] = {
     "chat_social": 120,
+    "chat_qa_paraphrase": 200,
 }
 
 

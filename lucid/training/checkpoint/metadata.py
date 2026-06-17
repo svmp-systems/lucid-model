@@ -217,6 +217,108 @@ def apply_runtime_promotion_fields(
     return record
 
 
+def _normalized_source_refs(source_refs: list[dict[str, Any]] | list[str] | None) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for ref in source_refs or []:
+        if isinstance(ref, dict):
+            token = str(ref.get("ref_id") or ref.get("url") or ref.get("title") or "").strip()
+            if token:
+                refs.append(dict(ref))
+        else:
+            token = str(ref).strip()
+            if token:
+                refs.append({"ref_id": token})
+    return refs
+
+
+def _merge_source_refs(record: dict[str, Any], source_refs: list[dict[str, Any]]) -> None:
+    existing = record.setdefault("source_refs", [])
+    if not isinstance(existing, list):
+        existing = []
+        record["source_refs"] = existing
+    seen = {
+        str(ref.get("ref_id") or ref.get("url") or ref.get("title") or "").strip()
+        for ref in existing
+        if isinstance(ref, dict)
+    }
+    for ref in source_refs:
+        token = str(ref.get("ref_id") or ref.get("url") or ref.get("title") or "").strip()
+        if token and token not in seen:
+            existing.append(ref)
+            seen.add(token)
+
+
+def promote_operator_from_evidence(
+    state: CheckpointState,
+    operator: dict[str, Any],
+    *,
+    support_count: int = 0,
+    shadow_pass_count: int = 0,
+    contradiction_count: int = 0,
+    trust_score: float = 0.0,
+    source_refs: list[dict[str, Any]] | list[str] | None = None,
+    source: str = "operator_promotion",
+    precision_tier: str = "uint8_sparse",
+) -> dict[str, Any]:
+    """Promote a learned operator only when evidence clears runtime gates."""
+
+    operator_id = str(operator.get("operator_id") or operator.get("id") or "").strip()
+    if not operator_id:
+        raise ValueError("operator promotion requires operator_id")
+
+    refs = _normalized_source_refs(source_refs)
+    record = ensure_metadata(
+        state,
+        f"operator:{operator_id}",
+        "operator",
+        source=source,
+        precision_tier=precision_tier,
+        source_refs=refs,
+    )
+    _merge_source_refs(record, refs)
+
+    source_count = _source_ref_count(refs)
+    support = max(int(record.get("support_count", 0) or 0), int(support_count), source_count)
+    shadow = max(int(record.get("shadow_pass_count", 0) or 0), int(shadow_pass_count))
+    contradictions = max(
+        int(record.get("contradiction_count", 0) or 0),
+        int(contradiction_count),
+    )
+    trust = max(float(record.get("trust_score", 0.0) or 0.0), float(trust_score or 0.0))
+
+    record["support_count"] = support
+    record["shadow_pass_count"] = shadow
+    record["contradiction_count"] = contradictions
+    record["trust_score"] = trust
+
+    if contradictions:
+        record["heat_tier"] = QUARANTINE
+        record["commit_permission"] = SUPPORT_ONLY
+    elif shadow >= 1 and (support >= 2 or trust >= 0.8):
+        record["heat_tier"] = WARM
+        record["commit_permission"] = NORMAL_SUPPORT
+    elif shadow >= 1 or support >= 1 or source_count >= 1:
+        record["heat_tier"] = PROBATION
+        record["commit_permission"] = SUPPORT_ONLY
+    else:
+        record["heat_tier"] = QUARANTINE
+        record["commit_permission"] = SUPPORT_ONLY
+
+    record["promotion_policy"] = "learned_operator_evidence_v1"
+    record["promotion_reason"] = (
+        "learned_operator_evidence:"
+        f"support={support}:shadow={shadow}:contradictions={contradictions}:trust={trust:.3f}"
+    )
+    record["updated_at"] = utc_now_iso()
+
+    apply_runtime_promotion_fields(operator, record)
+    operator["support_count"] = support
+    operator["shadow_pass_count"] = shadow
+    operator["contradiction_count"] = contradictions
+    operator["trust_score"] = trust
+    return record
+
+
 def promote_heat_tier(state: CheckpointState, object_id: str, object_type: str) -> dict[str, Any]:
     record = ensure_metadata(state, object_id, object_type)
     tier = str(record.get("heat_tier") or QUARANTINE)

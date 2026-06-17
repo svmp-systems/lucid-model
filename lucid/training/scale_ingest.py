@@ -23,10 +23,12 @@ from lucid.runtime.paths import resolve_checkpoint, resolve_train_path
 from lucid.training.checkpoint.metadata import (
     apply_runtime_promotion_fields,
     ensure_metadata,
+    promote_operator_from_evidence,
     record_contradiction,
     record_support,
     source_backed_shadow_promotion,
 )
+from lucid.training.ingest_progress import ingest_log, should_log_progress
 from lucid.training.checkpoint.registry import register_checkpoint
 from lucid.training.checkpoint.slots import promote_to_loaded
 from lucid.training.checkpoint.store import (
@@ -35,6 +37,15 @@ from lucid.training.checkpoint.store import (
     empty_checkpoint,
     load_checkpoint,
     save_checkpoint,
+)
+from lucid.training.ingest_config import (
+    IngestConfig,
+    CorpusContext,
+    QUANTUM_DOMAIN_SEED,
+    build_corpus_context,
+    build_source_entity_map,
+    infer_source_entity,
+    load_sources_from_path,
 )
 from lucid.training.ingest_learning import (
     DEFAULT_MAX_CANDIDATE_TERMS,
@@ -53,8 +64,19 @@ from lucid.training.ingest_learning import (
     normalize_relation_target,
     write_ingest_audit_report,
 )
+from lucid.training.ingest_quality import (
+    filter_concepts,
+    is_valid_candidate_term,
+    is_valid_subject_term,
+    reject_relation,
+)
 from lucid.training.quantum_articles import BOOTSTRAP_OPERATORS
-from lucid.training.source_context import SOURCE_ENTITY_BY_ARTICLE, VENDOR_ARTIFACT_RE
+from lucid.training.source_context import (
+    VENDOR_ARTIFACT_RE,
+    clear_source_entities,
+    register_source_entities,
+    source_entity_for_article,
+)
 
 TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'-]*")
@@ -101,6 +123,21 @@ BASIC_LANGUAGE_PHRASES = [
     "goodbye",
     "how are you",
     "what can you do",
+]
+
+PARAPHRASE_QUERY_PREFIXES = [
+    "what is",
+    "what is a",
+    "what are",
+    "tell me about",
+    "explain",
+    "can you explain",
+    "how does",
+    "how do",
+    "describe",
+    "what does",
+    "give me an overview of",
+    "i want to know about",
 ]
 
 STOPWORDS = {
@@ -231,39 +268,7 @@ SIGNATURE_PART_STOPWORDS = {
     "systems",
 }
 
-DOMAIN_TERMS = {
-    "algorithm",
-    "algorithms",
-    "annealing",
-    "bit",
-    "bits",
-    "circuit",
-    "circuits",
-    "classical",
-    "coherence",
-    "computer",
-    "computers",
-    "computing",
-    "decoherence",
-    "entanglement",
-    "error",
-    "errors",
-    "gate",
-    "gates",
-    "hardware",
-    "information",
-    "interference",
-    "mechanics",
-    "measurement",
-    "noise",
-    "processor",
-    "processors",
-    "quantum",
-    "qubit",
-    "qubits",
-    "simulation",
-    "superposition",
-}
+DOMAIN_TERMS = set(QUANTUM_DOMAIN_SEED)
 
 FACET_BY_RELATION = {
     "type_of": "definition",
@@ -459,15 +464,15 @@ def weighted_signature(pairs: list[tuple[str, float]], *, limit: int = 96) -> di
     return dict(sorted(ranked))
 
 
-def fetch_url(url: str) -> str:
+def fetch_url(url: str, *, timeout: int = 30) -> str:
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "LucidScaleIngest/0.2 (+source-backed training)",
+            "User-Agent": "LucidScaleIngest/0.3 (+source-backed training)",
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - selected article URLs only.
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - selected article URLs only.
         raw = response.read()
     return raw.decode("utf-8", errors="ignore")
 
@@ -478,15 +483,22 @@ def extract_text(raw_html: str) -> str:
     return re.sub(r"\s+", " ", parser.text()).strip()
 
 
-def split_sentences(text: str) -> list[str]:
+def split_sentences(
+    text: str,
+    *,
+    config: IngestConfig | None = None,
+    corpus_terms: frozenset[str] | None = None,
+) -> list[str]:
+    cfg = config or IngestConfig.scale_default()
+    gate_terms = corpus_terms if corpus_terms is not None else frozenset(cfg.domain_terms_seed)
     rows: list[str] = []
     seen: set[str] = set()
     for raw in SENTENCE_RE.split(text):
         sentence = " ".join(raw.strip().split())
-        if not 38 <= len(sentence) <= 360:
+        if not cfg.min_sentence_length <= len(sentence) <= cfg.max_sentence_length:
             continue
         lowered = sentence.lower()
-        if not any(term in lowered for term in DOMAIN_TERMS):
+        if not cfg.cross_domain and gate_terms and not any(term in lowered for term in gate_terms):
             continue
         if not usable_sentence(lowered):
             continue
@@ -509,24 +521,62 @@ def usable_sentence(lowered: str) -> bool:
     return True
 
 
-def load_articles(sources: list[dict[str, str]] = ARTICLE_SOURCES) -> list[Article]:
+def load_articles(
+    sources: list[dict[str, str]] | None = None,
+    *,
+    config: IngestConfig | None = None,
+) -> tuple[list[Article], list[dict[str, str]]]:
+    cfg = config or IngestConfig.scale_default()
+    rows = sources if sources is not None else ARTICLE_SOURCES
     articles: list[Article] = []
-    for source in sources:
-        raw = fetch_url(source["url"])
-        text = extract_text(raw)
-        sentences = split_sentences(text)
-        if not sentences:
-            raise RuntimeError(f"no usable quantum sentences extracted from {source['url']}")
-        articles.append(
-            Article(
-                source_id=source["source_id"],
-                title=source["title"],
-                url=source["url"],
-                text=text,
-                sentences=sentences,
+    errors: list[dict[str, str]] = []
+    total = len(rows)
+    ingest_log(f"fetching {total} article source(s)...", cfg)
+    for index, source in enumerate(rows, start=1):
+        source_id = str(source.get("source_id") or "")
+        url = str(source.get("url") or "")
+        title = str(source.get("title") or source_id or url)
+        try:
+            if not url:
+                raise RuntimeError("source row missing url")
+            raw = fetch_url(url, timeout=cfg.fetch_timeout)
+            text = extract_text(raw)
+            sentences = split_sentences(text, config=cfg)
+            if not sentences:
+                raise RuntimeError(f"no usable sentences extracted from {url}")
+            articles.append(
+                Article(
+                    source_id=source_id,
+                    title=title,
+                    url=url,
+                    text=text,
+                    sentences=sentences,
+                )
             )
-        )
-    return articles
+            if should_log_progress(index, total, cfg.progress_interval):
+                ingest_log(
+                    f"fetch {index}/{total} ok {source_id} ({len(sentences)} sentences)",
+                    cfg,
+                )
+        except Exception as exc:  # noqa: BLE001 - collect per-source failures for scale runs
+            error = {
+                "source_id": source_id,
+                "url": url,
+                "error": str(exc),
+            }
+            if cfg.skip_article_errors:
+                errors.append(error)
+                if should_log_progress(index, total, cfg.progress_interval):
+                    ingest_log(f"fetch {index}/{total} skip {source_id}: {exc}", cfg)
+                continue
+            raise RuntimeError(f"failed to ingest {url or source_id}: {exc}") from exc
+    if not articles:
+        raise RuntimeError("no articles loaded successfully")
+    ingest_log(
+        f"fetch complete: {len(articles)} loaded, {len(errors)} failed",
+        cfg,
+    )
+    return articles, errors
 
 
 def word_tokens(text: str) -> list[str]:
@@ -536,7 +586,9 @@ def word_tokens(text: str) -> list[str]:
 def singularize(term: str) -> str:
     if term.endswith("ies") and len(term) > 4:
         return term[:-3] + "y"
-    if term.endswith("s") and not term.endswith("ss") and len(term) > 3:
+    if term.endswith(("sis", "ics", "ss", "us")):
+        return term
+    if term.endswith("s") and len(term) > 3:
         return term[:-1]
     return term
 
@@ -562,8 +614,14 @@ def term_variants(term: str) -> list[str]:
 def extract_candidate_terms(
     articles: list[Article],
     *,
-    limit: int = DEFAULT_MAX_CANDIDATE_TERMS,
+    corpus_context: CorpusContext | None = None,
+    limit: int | None = None,
 ) -> list[str]:
+    ctx = corpus_context or build_corpus_context(articles, config=IngestConfig.scale_default())
+    cfg = ctx.config
+    term_limit = limit if limit is not None else cfg.max_candidate_terms
+    corpus_terms = ctx.corpus_terms
+    broad_terms = set(cfg.broad_single_terms)
     counts: Counter[str] = Counter()
     doc_counts: Counter[str] = Counter()
     for article in articles:
@@ -579,16 +637,21 @@ def extract_candidate_terms(
                     gram = tokens[index : index + n]
                     if not gram or all(token in STOPWORDS for token in gram):
                         continue
-                    if n > 1 and gram[0] in STOPWORDS | {"quantum"} and gram[-1] in STOPWORDS:
+                    if n > 1 and gram[0] in STOPWORDS and gram[-1] in STOPWORDS:
                         continue
                     phrase = " ".join(gram)
                     if VENDOR_ARTIFACT_RE.match(normalize_key(phrase)):
                         continue
                     if len(phrase) < 4:
                         continue
-                    if n == 1 and phrase not in DOMAIN_TERMS:
-                        continue
-                    if n > 1 and "quantum" not in gram and not (set(gram) & DOMAIN_TERMS):
+                    gram_set = set(gram)
+                    in_corpus = bool(gram_set & corpus_terms) or phrase in corpus_terms
+                    if n == 1:
+                        if phrase in broad_terms:
+                            continue
+                        if not in_corpus and len(phrase) < cfg.promote_long_unigram_len:
+                            continue
+                    elif not in_corpus and not cfg.cross_domain:
                         continue
                     counts[phrase] += 1
                     article_terms.add(phrase)
@@ -598,17 +661,26 @@ def extract_candidate_terms(
     scored: list[tuple[float, str]] = []
     for term, count in counts.items():
         tokens = term.split()
-        if len(tokens) == 1 and tokens[0] in BROAD_SINGLE_TERMS:
+        if len(tokens) == 1 and tokens[0] in broad_terms:
             continue
-        if count < 2 and not (set(tokens) & {"qubit", "qubits", "superposition", "entanglement"}):
+        if (
+            count < cfg.min_term_count
+            and doc_counts[term] < cfg.min_term_doc_count
+            and len(tokens[0]) < cfg.promote_long_unigram_len
+        ):
             continue
         doc_boost = 1.0 + 0.3 * doc_counts[term]
-        domain_boost = 1.5 if set(tokens) & DOMAIN_TERMS else 1.0
+        domain_boost = 1.5 if set(tokens) & corpus_terms else 1.0
         multi_boost = 1.0 + 0.15 * (len(tokens) - 1)
         score = count * doc_boost * domain_boost * multi_boost
         scored.append((score, term))
     scored.sort(key=lambda item: (-item[0], item[1]))
-    return [term for _score, term in scored[:limit]]
+    ranked = [term for _score, term in scored[: term_limit * 2]]
+    return [
+        term
+        for term in ranked[:term_limit]
+        if is_valid_candidate_term(term, broad_terms=cfg.broad_single_terms)
+    ]
 
 
 def subject_anchor(sentence: str, subject: str) -> int | None:
@@ -748,7 +820,7 @@ def clean_target(text: str, *, max_words: int = 24) -> str:
     return cleaned
 
 
-def usable_target(relation: str, target: str) -> bool:
+def usable_target(relation: str, target: str, *, corpus_terms: frozenset[str] | None = None) -> bool:
     lowered = normalize_key(target).replace("_", " ")
     if not lowered or lowered in BAD_TARGET_STARTS:
         return False
@@ -757,7 +829,7 @@ def usable_target(relation: str, target: str) -> bool:
     words = lowered.split()
     if len(words) < 3 and relation in {"type_of", "property", "uses", "enables"}:
         return False
-    if len(words) <= 2 and not (set(words) & DOMAIN_TERMS):
+    if len(words) <= 2 and corpus_terms and not (set(words) & set(corpus_terms)):
         return False
     if relation == "type_of" and lowered.startswith(("worth ", "both ", "not ")):
         return False
@@ -787,11 +859,14 @@ def fallback_subject(sentence: str, terms: list[str]) -> str:
     return scored[0][2]
 
 
-def best_subject(sentence: str, terms: list[str]) -> str:
+def best_subject(sentence: str, terms: list[str], *, broad_terms: frozenset[str] | None = None) -> str:
+    valid_terms = [term for term in terms if is_valid_subject_term(term, broad_terms=broad_terms)]
+    if not valid_terms:
+        return ""
     normalized = " " + humanize_key(sentence) + " "
     matches = [
         term
-        for term in terms
+        for term in valid_terms
         if any(f" {humanize_key(variant)} " in normalized for variant in term_variants(term))
     ]
     scored: list[tuple[int, int, int, str]] = []
@@ -814,7 +889,7 @@ def best_subject(sentence: str, terms: list[str]) -> str:
     if scored:
         scored.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
         return scored[0][3]
-    fallback = fallback_subject(sentence, terms)
+    fallback = fallback_subject(sentence, valid_terms)
     if fallback:
         return fallback
     matches.sort(key=lambda term: (-len(term.split()), -len(term), term))
@@ -982,6 +1057,9 @@ def merge_equivalent_concepts(
     equivalence_edges: list[dict[str, Any]],
     relations_by_concept: dict[str, list[dict[str, Any]]],
     term_source_refs: dict[str, set[str]],
+    *,
+    max_per_facet: int = DEFAULT_MAX_RELATIONS_PER_FACET,
+    max_total: int = DEFAULT_MAX_RELATIONS_PER_CONCEPT,
 ) -> list[dict[str, Any]]:
     if not equivalence_edges:
         return concepts
@@ -1021,8 +1099,8 @@ def merge_equivalent_concepts(
         canonical["terms"] = dedupe(terms)
         canonical["relations"] = cap_relations_by_facet(
             merge_relations(relations),
-            max_per_facet=DEFAULT_MAX_RELATIONS_PER_FACET,
-            max_total=DEFAULT_MAX_RELATIONS_PER_CONCEPT,
+            max_per_facet=max_per_facet,
+            max_total=max_total,
         )
         canonical["source_refs"] = sorted(set(source_refs))
         extraction = dict(canonical.get("extraction") or {})
@@ -1043,8 +1121,15 @@ def extract_concepts(
     articles: list[Article],
     *,
     audit: SentenceAudit | None = None,
+    config: IngestConfig | None = None,
+    corpus_context: CorpusContext | None = None,
 ) -> list[dict[str, Any]]:
-    concepts, _report = extract_concepts_with_learning(articles, audit=audit)
+    concepts, _report = extract_concepts_with_learning(
+        articles,
+        audit=audit,
+        config=config,
+        corpus_context=corpus_context,
+    )
     return concepts
 
 
@@ -1052,17 +1137,22 @@ def extract_concepts_with_learning(
     articles: list[Article],
     *,
     audit: SentenceAudit | None = None,
+    config: IngestConfig | None = None,
+    corpus_context: CorpusContext | None = None,
 ) -> tuple[list[dict[str, Any]], IngestLearningReport]:
+    cfg = config or IngestConfig.scale_default()
+    ctx = corpus_context or build_corpus_context(articles, config=cfg)
     sentence_audit = audit or SentenceAudit()
-    terms = extract_candidate_terms(articles)
+    terms = extract_candidate_terms(articles, corpus_context=ctx)
+    ingest_log(f"claims pass: {len(articles)} articles, {len(terms)} candidate terms", cfg)
     relations_by_concept: dict[str, list[dict[str, Any]]] = defaultdict(list)
     term_source_refs: dict[str, set[str]] = defaultdict(set)
 
-    for article in articles:
+    for article_index, article in enumerate(articles, start=1):
         sentence_audit.total_raw += len(article.sentences)
         for sentence in article.sentences:
             sentence_audit.eligible += 1
-            subject = best_subject(sentence, terms)
+            subject = best_subject(sentence, terms, broad_terms=cfg.broad_single_terms)
             if not subject:
                 sentence_audit.skipped_no_subject += 1
                 sentence_audit.skip_reasons["no_subject"] += 1
@@ -1084,12 +1174,23 @@ def extract_concepts_with_learning(
                 "source_refs": [article.source_id],
                 "source_sentence": sentence,
             }
-            entity = SOURCE_ENTITY_BY_ARTICLE.get(article.source_id, "")
+            reject_reason = reject_relation(record)
+            if reject_reason:
+                sentence_audit.skipped_no_relation += 1
+                sentence_audit.skip_reasons[f"quality_{reject_reason}"] += 1
+                continue
+            entity = ctx.source_entities.get(article.source_id) or source_entity_for_article(article.source_id)
             if entity:
                 record["source_entity"] = entity
             relations_by_concept[concept_id].append(record)
             term_source_refs[concept_id].add(article.source_id)
             sentence_audit.extracted += 1
+        if should_log_progress(article_index, len(articles), cfg.progress_interval):
+            ingest_log(
+                f"claims pass {article_index}/{len(articles)} {article.source_id} "
+                f"({sentence_audit.extracted} claims so far)",
+                cfg,
+            )
 
     equivalence_edges = extract_equivalence_edges(
         articles,
@@ -1097,14 +1198,15 @@ def extract_concepts_with_learning(
         relations_by_concept,
         term_source_refs,
     )
+    ingest_log(f"equivalence edges: {len(equivalence_edges)}", cfg)
 
     concepts: list[dict[str, Any]] = []
     for term in terms:
         concept_id = normalize_key(term)
         relations = cap_relations_by_facet(
             merge_relations(relations_by_concept.get(concept_id, [])),
-            max_per_facet=DEFAULT_MAX_RELATIONS_PER_FACET,
-            max_total=DEFAULT_MAX_RELATIONS_PER_CONCEPT,
+            max_per_facet=cfg.max_relations_per_facet,
+            max_total=cfg.max_relations_per_concept,
         )
         if not relations:
             continue
@@ -1126,7 +1228,10 @@ def extract_concepts_with_learning(
         equivalence_edges,
         relations_by_concept,
         term_source_refs,
+        max_per_facet=cfg.max_relations_per_facet,
+        max_total=cfg.max_relations_per_concept,
     )
+    ingest_log(f"merged concepts: {len(merged)}", cfg)
     before_split = len(merged)
     branched, conflict_events = apply_contradiction_branches(
         merged,
@@ -1135,15 +1240,29 @@ def extract_concepts_with_learning(
         ),
     )
     branched = consolidate_vendor_artifact_concepts(branched)
+    filtered, quality_stats = filter_concepts(
+        branched,
+        broad_terms=cfg.broad_single_terms,
+        corpus_terms=ctx.corpus_terms,
+    )
+    ingest_log(
+        f"quality filter: {quality_stats['concepts_before_quality_filter']} -> "
+        f"{quality_stats['concepts_after_quality_filter']} concepts",
+        cfg,
+    )
     report = IngestLearningReport(
         sentence_audit=sentence_audit,
         concepts_before_split=before_split,
-        concepts_after_split=len(branched),
+        concepts_after_split=len(filtered),
         contradiction_splits=len(conflict_events),
         contradiction_events=conflict_events,
         article_sentence_counts={article.source_id: len(article.sentences) for article in articles},
+        concepts_before_quality_filter=int(quality_stats["concepts_before_quality_filter"]),
+        concepts_after_quality_filter=int(quality_stats["concepts_after_quality_filter"]),
+        quality_rejections=dict(quality_stats["concept_rejections"]),
+        relation_quality_rejections=dict(quality_stats["relation_rejections"]),
     )
-    return branched, report
+    return filtered, report
 
 
 def relation_confidence(relation: str, sentence: str) -> float:
@@ -1506,6 +1625,46 @@ def build_basic_language_records() -> dict[str, list[dict[str, Any]]]:
     }
 
 
+def build_paraphrase_query_records() -> dict[str, list[dict[str, Any]]]:
+    """Aliases and traces so paraphrased concept questions bind to query frames."""
+    aliases: list[dict[str, Any]] = []
+    traces: list[dict[str, Any]] = []
+    for prefix in PARAPHRASE_QUERY_PREFIXES:
+        key = normalize_key(prefix)
+        aliases.append(
+            {
+                "alias_id": f"alias_query_{key}",
+                "surface_pattern": prefix,
+                "relation_candidates": ["concept_query", "definition_query"],
+                "confidence": 0.88,
+                "source": "paraphrase_query_corpus",
+            }
+        )
+        traces.append(
+            {
+                "trace_id": f"t_query_{key}",
+                "trace_family": "concept_query_like",
+                "alias": prefix,
+                "cue_affinities": weighted_signature(
+                    [(prefix, 0.92), ("concept_query", 0.9), ("definition_query", 0.86)]
+                ),
+                "cluster_id": "concept_query",
+                "heat_tier": "warm",
+                "maturity_state": "active",
+                "activation_bias": 0.05,
+                "activation_count": 1,
+                "success_count": 1,
+                "failure_count": 0,
+                "created_from_cues": [prefix],
+                "created_from_examples": ["paraphrase_query_corpus"],
+                "source_refs": ["paraphrase_query_corpus"],
+                "description": f"Paraphrase query prefix: {prefix}",
+                "last_update_summary": "scale_ingest_paraphrase_query",
+            }
+        )
+    return {"aliases": aliases, "traces": traces, "basins": [], "decoder_targets": []}
+
+
 def basic_language_response(phrase: str) -> tuple[str, str]:
     key = normalize_key(phrase)
     if key in {"hi", "hello", "hey", "good_morning", "good_afternoon", "good_evening"}:
@@ -1523,14 +1682,36 @@ def run_ingest_learning_pipeline(
     articles: list[Article],
     *,
     audit: SentenceAudit | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], IngestLearningReport]:
-    concepts, report = extract_concepts_with_learning(articles, audit=audit)
+    config: IngestConfig | None = None,
+    corpus_context: CorpusContext | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], IngestLearningReport, CorpusContext]:
+    cfg = config or IngestConfig.scale_default()
+    ctx = corpus_context or build_corpus_context(articles, config=cfg)
+    concepts, report = extract_concepts_with_learning(
+        articles,
+        audit=audit,
+        config=cfg,
+        corpus_context=ctx,
+    )
     traces = build_trace_records(concepts)
     report.traces_before_consolidation = len(traces)
+    ingest_log(f"building traces: {len(traces)} raw", cfg)
     traces, deduped = consolidate_trace_records(traces)
     report.traces_after_consolidation = len(traces)
     report.traces_deduplicated = deduped
-    return concepts, traces, report
+    return concepts, traces, report, ctx
+
+
+def resolve_ingest_sources(
+    *,
+    sources: list[dict[str, str]] | None = None,
+    sources_path: str | Path | None = None,
+) -> list[dict[str, str]]:
+    if sources_path:
+        return load_sources_from_path(sources_path)
+    if sources is not None:
+        return sources
+    return ARTICLE_SOURCES
 
 
 def train_scale_ingest(
@@ -1538,16 +1719,39 @@ def train_scale_ingest(
     *,
     pin_loaded: bool = False,
     write_audit: bool = True,
+    config: IngestConfig | None = None,
+    sources: list[dict[str, str]] | None = None,
+    sources_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    cfg = config or IngestConfig.scale_default()
     root = resolve_checkpoint(checkpoint)
     state = empty_checkpoint(root.name or "v.0.2")
     state.checkpoint_id = root.name or "v.0.2"
 
-    articles = load_articles()
-    concepts, traces, learning_report = run_ingest_learning_pipeline(articles)
-    aliases = [*build_alias_records(concepts), *build_mechanism_relation_aliases()]
+    source_rows = resolve_ingest_sources(sources=sources, sources_path=sources_path)
+    ingest_log(f"starting checkpoint {root.name} from {len(source_rows)} source(s)", cfg)
+    clear_source_entities()
+    register_source_entities(build_source_entity_map(source_rows))
+
+    articles, load_errors = load_articles(source_rows, config=cfg)
+    ingest_log("building corpus context...", cfg)
+    corpus_ctx = build_corpus_context(articles, config=cfg, sources=source_rows)
+    register_source_entities(corpus_ctx.source_entities)
+    ingest_log(f"corpus terms: {len(corpus_ctx.corpus_terms)}", cfg)
+
+    concepts, traces, learning_report, corpus_ctx = run_ingest_learning_pipeline(
+        articles,
+        config=cfg,
+        corpus_context=corpus_ctx,
+    )
+    ingest_log(f"assembling stores ({len(concepts)} concepts, {len(traces)} traces)...", cfg)
+    aliases = [
+        *build_alias_records(concepts),
+        *build_mechanism_relation_aliases(corpus_ctx.source_entities),
+    ]
     basins = build_basin_records(concepts)
     basic = build_basic_language_records()
+    paraphrase = build_paraphrase_query_records()
 
     concept_bank = state.ensure_store("concept_bank")
     concept_store = concept_bank.setdefault("concepts", [])
@@ -1617,7 +1821,7 @@ def train_scale_ingest(
         concept_record["commit_permission"] = metadata["commit_permission"]
         upsert_by_key(concept_store, "concept_id", concept_record)
 
-    for trace in [*traces, *basic["traces"]]:
+    for trace in [*traces, *basic["traces"], *paraphrase["traces"]]:
         if str(trace.get("heat_tier") or "") == "warm":
             metadata = ensure_metadata(
                 state,
@@ -1678,13 +1882,22 @@ def train_scale_ingest(
         apply_runtime_promotion_fields(basin, metadata)
         upsert_by_key(basin_store, "basin_id", basin)
 
-    for alias in [*aliases, *basic["aliases"]]:
+    for alias in [*aliases, *basic["aliases"], *paraphrase["aliases"]]:
         upsert_by_key(alias_store, "alias_id", alias)
         record_support(state, f"alias:{alias['alias_id']}", "relation_alias")
 
     for operator in BOOTSTRAP_OPERATORS:
-        upsert_by_key(operator_store, "operator_id", operator)
-        ensure_metadata(state, f"operator:{operator['operator_id']}", "operator", source="scale_ingest")
+        operator_record = dict(operator)
+        promote_operator_from_evidence(
+            state,
+            operator_record,
+            source="scale_ingest",
+            source_refs=["scale_ingest_bootstrap"],
+            support_count=3,
+            shadow_pass_count=1,
+            trust_score=float(operator.get("default_confidence", 0.0) or 0.0),
+        )
+        upsert_by_key(operator_store, "operator_id", operator_record)
 
     for event in learning_report.contradiction_events:
         base_id = str(event.get("base_concept_id") or "")
@@ -1705,6 +1918,14 @@ def train_scale_ingest(
     audit_payload["concepts"] = len(concepts)
     audit_payload["traces"] = len(trace_store)
     audit_payload["basins"] = len(basin_store)
+    audit_payload["corpus_terms"] = len(corpus_ctx.corpus_terms)
+    audit_payload["load_errors"] = load_errors
+    audit_payload["ingest_config"] = {
+        "cross_domain": cfg.cross_domain,
+        "max_candidate_terms": cfg.max_candidate_terms,
+        "max_relations_per_concept": cfg.max_relations_per_concept,
+        "max_relations_per_facet": cfg.max_relations_per_facet,
+    }
     audit_path: str | None = None
     if write_audit:
         audit_dir = resolve_train_path("audit/runs/ingest")
@@ -1713,19 +1934,26 @@ def train_scale_ingest(
         audit_path = str(audit_file)
         text_report = audit_dir / f"{root.name or 'ingest'}-report.txt"
         text_report.write_text(format_ingest_audit_text(learning_report), encoding="utf-8")
+        ingest_log(f"audit report -> {audit_file}", cfg)
 
+    ingest_log(f"saving checkpoint -> {root}", cfg)
     save_checkpoint(state, root, force=True, step_delta=1)
     summary = checkpoint_summary(load_checkpoint(root, create=False))
     registered = register_checkpoint(
         name=root.name,
         path=root,
-        label="scale-style 5 quantum articles + basic language",
+        label=cfg.checkpoint_label,
         command="lucid.training.scale_ingest",
         summary=summary,
     )
     loaded: str | None = None
     if pin_loaded:
-        loaded = str(promote_to_loaded(root, label="scale-style quantum/basic language v.0.2"))
+        loaded = str(promote_to_loaded(root, label=cfg.checkpoint_label))
+        ingest_log(f"pinned loaded checkpoint -> {loaded}", cfg)
+    ingest_log(
+        f"done: {len(concepts)} concepts, {len(trace_store)} traces, {len(basin_store)} basins",
+        cfg,
+    )
 
     return {
         "checkpoint": str(root),
@@ -1743,6 +1971,14 @@ def train_scale_ingest(
         "ingest_learning": learning_report.to_dict(),
         "ingest_audit_path": audit_path,
         "ingest_coverage_ratio": learning_report.sentence_audit.to_dict()["coverage_ratio"],
+        "corpus_terms": len(corpus_ctx.corpus_terms),
+        "load_errors": load_errors,
+        "ingest_config": {
+            "cross_domain": cfg.cross_domain,
+            "max_candidate_terms": cfg.max_candidate_terms,
+            "max_relations_per_concept": cfg.max_relations_per_concept,
+            "max_relations_per_facet": cfg.max_relations_per_facet,
+        },
     }
 
 
@@ -1782,25 +2018,66 @@ def run_crosstalk_smoke() -> dict[str, Any]:
     }
 
 
-def audit_ingest_from_articles(articles: list[Article] | None = None) -> dict[str, Any]:
-    rows = articles if articles is not None else load_articles()
-    concepts, traces, report = run_ingest_learning_pipeline(rows)
+def audit_ingest_from_articles(
+    articles: list[Article] | None = None,
+    *,
+    config: IngestConfig | None = None,
+    sources_path: str | Path | None = None,
+) -> dict[str, Any]:
+    cfg = config or IngestConfig.scale_default()
+    load_errors: list[dict[str, str]] = []
+    if articles is not None:
+        rows = articles
+    else:
+        source_rows = resolve_ingest_sources(sources_path=sources_path)
+        rows, load_errors = load_articles(source_rows, config=cfg)
+    concepts, traces, report, ctx = run_ingest_learning_pipeline(rows, config=cfg)
     payload = report.to_dict()
     payload.update(
         {
             "concepts": len(concepts),
             "traces": len(traces),
+            "corpus_terms": len(ctx.corpus_terms),
+            "load_errors": load_errors,
             "ingest_audit_text": format_ingest_audit_text(report),
         }
     )
     return payload
 
 
+def _ingest_config_from_args(args: argparse.Namespace) -> IngestConfig:
+    if getattr(args, "quantum_preset", False):
+        return IngestConfig.quantum_default()
+    return IngestConfig(
+        cross_domain=not getattr(args, "domain_gate", False),
+        max_candidate_terms=getattr(args, "max_candidate_terms", 2000),
+        max_relations_per_facet=getattr(args, "max_relations_per_facet", 32),
+        max_relations_per_concept=getattr(args, "max_relations_per_concept", 48),
+        skip_article_errors=not getattr(args, "fail_fast", False),
+        progress_logging=not getattr(args, "no_progress", False),
+        progress_interval=max(1, int(getattr(args, "progress_interval", 5))),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Train scale-style source-backed v.0.2 checkpoint")
+    parser = argparse.ArgumentParser(description="Train scale-style source-backed checkpoint")
     parser.add_argument("--checkpoint", default="checkpoints/saves/v.0.2")
+    parser.add_argument("--sources", help="JSON or JSONL file listing article sources")
     parser.add_argument("--pin-loaded", action="store_true")
     parser.add_argument("--no-audit", action="store_true", help="Skip writing ingest audit report files")
+    parser.add_argument("--quantum-preset", action="store_true", help="Use legacy quantum-only ingest profile")
+    parser.add_argument("--domain-gate", action="store_true", help="Require seed/domain terms in each sentence")
+    parser.add_argument("--fail-fast", action="store_true", help="Stop on first article load failure")
+    parser.add_argument("--max-candidate-terms", type=int, default=2000)
+    parser.add_argument("--max-relations-per-facet", type=int, default=32)
+    parser.add_argument("--max-relations-per-concept", type=int, default=48)
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=5,
+        help="Log fetch/claims progress every N articles (1 = every article)",
+    )
+    parser.add_argument("--no-progress", action="store_true", help="Disable stderr progress logging")
     args = parser.parse_args(argv)
     print(
         json.dumps(
@@ -1808,6 +2085,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.checkpoint,
                 pin_loaded=args.pin_loaded,
                 write_audit=not args.no_audit,
+                config=_ingest_config_from_args(args),
+                sources_path=args.sources,
             ),
             indent=2,
             sort_keys=True,

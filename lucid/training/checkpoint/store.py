@@ -239,5 +239,6 @@ def checkpoint_summary(state: CheckpointState) -> dict[str, Any]:
         },
         "metadata_lifecycle": _metadata_lifecycle_counts(state),
         "checkpoint_scale_metrics": dict(state.manifest.get("checkpoint_scale_metrics", {})),
+        "checkpoint_shards": dict(state.manifest.get("checkpoint_shards", {})),
         "training_steps": int(state.manifest.get("training_steps", 0)),
     }

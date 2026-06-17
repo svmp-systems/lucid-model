@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lucid.training.ingest_config import IngestConfig
 from lucid.training.ingest_learning import (
     apply_contradiction_branches,
     cap_relations_by_facet,
@@ -75,7 +76,7 @@ def test_crosstalk_splits_conflicting_article_readings() -> None:
         ],
     )
 
-    concepts, report = extract_concepts_with_learning([article_one, article_two])
+    concepts, report = extract_concepts_with_learning([article_one, article_two], config=IngestConfig.quantum_default())
     branched = [concept for concept in concepts if "__reading_" in str(concept.get("concept_id") or "")]
     assert branched, "expected a contradiction branch for conflicting readings"
     assert report.contradiction_splits >= 1
@@ -98,8 +99,10 @@ def test_agreement_keeps_single_branch_for_shared_target() -> None:
         ],
     )
 
-    concepts, report = extract_concepts_with_learning([article_one, article_two])
-    branches = [concept for concept in concepts if str(concept.get("concept_id") or "").startswith("quantum_computing")]
+    concepts, report = extract_concepts_with_learning([article_one, article_two], config=IngestConfig.quantum_default())
+    branches = [
+        concept for concept in concepts if str(concept.get("concept_id") or "") == "quantum_computing"
+    ]
     assert len(branches) == 1
     assert report.contradiction_splits == 0
 
@@ -276,7 +279,7 @@ def test_run_ingest_learning_pipeline_reports_coverage() -> None:
             ],
         )
     ]
-    concepts, traces, report = run_ingest_learning_pipeline(articles)
+    concepts, traces, report, _ctx = run_ingest_learning_pipeline(articles)
     assert concepts
     assert traces
     assert report.sentence_audit.eligible == 2

@@ -11,6 +11,11 @@ from lucid.training.checkpoint.metadata import (
     summarize_metadata_lifecycle,
 )
 from lucid.training.checkpoint.registry import list_registry
+from lucid.training.checkpoint.shards import (
+    DEFAULT_MAX_ITEMS_PER_SHARD,
+    SHARDABLE_STORES,
+    compact_checkpoint,
+)
 from lucid.training.checkpoint.slots import (
     archive_training_checkpoint,
     clear_loaded_checkpoint,
@@ -136,6 +141,27 @@ def _cmd_lifecycle(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compact(args: argparse.Namespace) -> int:
+    checkpoint = resolve_checkpoint_ref(args.checkpoint)
+    summary = compact_checkpoint(
+        checkpoint,
+        max_items_per_shard=args.max_items_per_shard,
+        stores=args.store or None,
+    )
+    print(
+        json.dumps(
+            {
+                "checkpoint": args.checkpoint,
+                "resolved_checkpoint": checkpoint,
+                **summary,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lucid checkpoint")
     sub = parser.add_subparsers(dest="action", required=True)
@@ -190,6 +216,24 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_p.add_argument("--max-age-days", type=int, default=30)
     lifecycle_p.add_argument("--archive-stale", action="store_true")
     lifecycle_p.set_defaults(func=_cmd_lifecycle)
+
+    compact_p = sub.add_parser(
+        "compact",
+        help="Compact keyed stores and write manifest-indexed checkpoint shards",
+    )
+    compact_p.add_argument("--checkpoint", default="training")
+    compact_p.add_argument(
+        "--max-items-per-shard",
+        type=int,
+        default=DEFAULT_MAX_ITEMS_PER_SHARD,
+    )
+    compact_p.add_argument(
+        "--store",
+        action="append",
+        choices=sorted(SHARDABLE_STORES),
+        help="Shard one store; repeat for multiple stores. Defaults to all shardable stores.",
+    )
+    compact_p.set_defaults(func=_cmd_compact)
     return parser
 
 

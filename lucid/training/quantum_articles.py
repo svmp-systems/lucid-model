@@ -16,6 +16,7 @@ from lucid.runtime.paths import DEFAULT_TRAINING_CHECKPOINT, resolve_checkpoint
 from lucid.training.checkpoint.metadata import (
     apply_runtime_promotion_fields,
     ensure_metadata,
+    promote_operator_from_evidence,
     record_support,
     source_backed_shadow_promotion,
 )
@@ -485,13 +486,17 @@ def train_quantum_articles(
         record_support(state, f"alias:{alias['alias_id']}", "relation_alias")
 
     for operator in BOOTSTRAP_OPERATORS:
-        _upsert_by_key(operator_store, "operator_id", operator, merge_lists=False)
-        ensure_metadata(
+        operator_record = dict(operator)
+        promote_operator_from_evidence(
             state,
-            f"operator:{operator['operator_id']}",
-            "operator",
+            operator_record,
             source="universal_bootstrap",
+            source_refs=["universal_bootstrap"],
+            support_count=3,
+            shadow_pass_count=1,
+            trust_score=float(operator.get("default_confidence", 0.0) or 0.0),
         )
+        _upsert_by_key(operator_store, "operator_id", operator_record, merge_lists=False)
 
     save_checkpoint(state, root, force=True, step_delta=1)
     return {

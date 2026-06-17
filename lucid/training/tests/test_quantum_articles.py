@@ -17,7 +17,10 @@ def test_quantum_article_training_writes_cost_aware_checkpoint(tmp_path) -> None
     assert summary["basins"] >= 5
     assert summary["metadata_objects"] >= 23
     assert state.ensure_store("concept_bank")["sources"]
-    assert state.ensure_store("operator_bank")["operators"]
+    operators = state.ensure_store("operator_bank")["operators"]
+    assert operators
+    assert all(operator["commit_permission"] == "normal_support" for operator in operators)
+    assert all(operator["heat_tier"] == "warm" for operator in operators)
     tracebank = state.ensure_store("tracebank")["records"]
     basin_bank = state.ensure_store("basin_bank")["records"]
     assert any(record["trace_id"] == "t_qubit" for record in tracebank)

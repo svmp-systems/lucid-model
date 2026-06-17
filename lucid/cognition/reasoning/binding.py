@@ -569,10 +569,24 @@ def _add_alias_edges(
                 )
 
 
+def _operator_runtime_allowed(operator: dict[str, Any]) -> bool:
+    if "heat_tier" not in operator and "commit_permission" not in operator:
+        return True
+    permission = str(operator.get("commit_permission") or "").strip().lower()
+    heat_tier = str(operator.get("heat_tier") or "").strip().lower()
+    if permission and permission != "normal_support":
+        return False
+    if heat_tier and heat_tier not in {"warm", "hot", "cold"}:
+        return False
+    return permission == "normal_support" or heat_tier in {"warm", "hot", "cold"}
+
+
 def _apply_operators(graph: LocalGraph, operators: list[dict[str, Any]]) -> None:
     if not operators or not graph.edges:
         return
     for operator in operators:
+        if not _operator_runtime_allowed(operator):
+            continue
         pattern = operator.get("pattern") or []
         effects = operator.get("effects") or []
         if not isinstance(pattern, list) or not isinstance(effects, list):

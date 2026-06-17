@@ -968,7 +968,7 @@ def _cmd_scaling_path(_args: argparse.Namespace) -> int:
 
 
 def _cmd_ingest_train(args: argparse.Namespace) -> int:
-    from lucid.training.scale_ingest import train_scale_ingest
+    from lucid.training.scale_ingest import _ingest_config_from_args, train_scale_ingest
 
     print(
         json.dumps(
@@ -976,6 +976,8 @@ def _cmd_ingest_train(args: argparse.Namespace) -> int:
                 args.checkpoint,
                 pin_loaded=args.pin_loaded,
                 write_audit=not args.no_audit,
+                config=_ingest_config_from_args(args),
+                sources_path=args.sources or None,
             ),
             indent=2,
             sort_keys=True,
@@ -985,9 +987,18 @@ def _cmd_ingest_train(args: argparse.Namespace) -> int:
 
 
 def _cmd_ingest_audit(args: argparse.Namespace) -> int:
-    from lucid.training.scale_ingest import audit_ingest_from_articles
+    from lucid.training.scale_ingest import _ingest_config_from_args, audit_ingest_from_articles
 
-    print(json.dumps(audit_ingest_from_articles(), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            audit_ingest_from_articles(
+                config=_ingest_config_from_args(args),
+                sources_path=args.sources or None,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1394,11 +1405,34 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ingest_train = ingest_sub.add_parser("train", help="Run scale-style article ingest into a checkpoint")
     ingest_train.add_argument("--checkpoint", default="checkpoints/saves/v.0.2")
+    ingest_train.add_argument("--sources", default="", help="JSON/JSONL file of article sources")
     ingest_train.add_argument("--pin-loaded", action="store_true")
     ingest_train.add_argument("--no-audit", action="store_true")
+    ingest_train.add_argument("--quantum-preset", action="store_true")
+    ingest_train.add_argument("--domain-gate", action="store_true")
+    ingest_train.add_argument("--fail-fast", action="store_true")
+    ingest_train.add_argument("--max-candidate-terms", type=int, default=2000)
+    ingest_train.add_argument("--max-relations-per-facet", type=int, default=32)
+    ingest_train.add_argument("--max-relations-per-concept", type=int, default=48)
+    ingest_train.add_argument(
+        "--progress-interval",
+        type=int,
+        default=5,
+        help="Log fetch/claims progress every N articles (1 = every article)",
+    )
+    ingest_train.add_argument("--no-progress", action="store_true")
     ingest_train.set_defaults(func=_cmd_ingest_train)
 
     ingest_audit = ingest_sub.add_parser("audit", help="Dry-run ingest audit report without saving checkpoint")
+    ingest_audit.add_argument("--sources", default="", help="JSON/JSONL file of article sources")
+    ingest_audit.add_argument("--quantum-preset", action="store_true")
+    ingest_audit.add_argument("--domain-gate", action="store_true")
+    ingest_audit.add_argument("--fail-fast", action="store_true")
+    ingest_audit.add_argument("--max-candidate-terms", type=int, default=2000)
+    ingest_audit.add_argument("--max-relations-per-facet", type=int, default=32)
+    ingest_audit.add_argument("--max-relations-per-concept", type=int, default=48)
+    ingest_audit.add_argument("--progress-interval", type=int, default=5)
+    ingest_audit.add_argument("--no-progress", action="store_true")
     ingest_audit.set_defaults(func=_cmd_ingest_audit)
 
     ingest_crosstalk = ingest_sub.add_parser("crosstalk", help="Run synthetic crosstalk smoke from learning.md")

@@ -6,12 +6,17 @@ from datetime import datetime, timedelta, timezone
 from lucid.training.checkpoint.cli import main as checkpoint_main
 from lucid.training.checkpoint.metadata import (
     ARCHIVED,
+    NORMAL_SUPPORT,
     QUARANTINE,
+    SUPPORT_ONLY,
+    WARM,
     archive_stale_quarantine,
     ensure_metadata,
+    promote_operator_from_evidence,
     summarize_metadata_lifecycle,
 )
-from lucid.training.checkpoint.store import empty_checkpoint, save_checkpoint
+from lucid.training.checkpoint.shards import compact_checkpoint, load_store_from_shards
+from lucid.training.checkpoint.store import checkpoint_summary, empty_checkpoint, load_checkpoint, save_checkpoint
 
 
 def test_archive_stale_quarantine_only_archives_unsupported_objects() -> None:
@@ -93,3 +98,65 @@ def test_checkpoint_lifecycle_cli_archives_stale_quarantine(tmp_path, capsys) ->
     payload = json.loads(capsys.readouterr().out)
     assert payload["archived"][0]["object_id"] == "trace:stale"
     assert payload["after"]["heat_tiers"][ARCHIVED] == 1
+
+
+def test_checkpoint_compaction_writes_shard_sidecars_and_manifest(tmp_path) -> None:
+    state = empty_checkpoint("compact")
+    tracebank = state.ensure_store("tracebank")
+    tracebank["records"] = [
+        {"trace_id": f"t_{index}", "cue_affinities": {"x": 0.1}}
+        for index in range(5)
+    ]
+    tracebank["records"].append({"trace_id": "t_3", "cue_affinities": {"x": 0.9}})
+    save_checkpoint(state, tmp_path)
+
+    summary = compact_checkpoint(tmp_path, max_items_per_shard=2, stores=["tracebank"])
+    loaded = load_checkpoint(tmp_path, create=False)
+    sharded = load_store_from_shards(tmp_path, "tracebank")
+
+    assert summary["stores"]["tracebank"]["deduped_item_count"] == 1
+    assert summary["stores"]["tracebank"]["shard_count"] == 3
+    assert (tmp_path / "_shards" / "tracebank" / "index.json").exists()
+    assert len(loaded.ensure_store("tracebank")["records"]) == 5
+    assert len(sharded["records"]) == 5
+    assert sharded["records"][3]["cue_affinities"]["x"] == 0.9
+    assert checkpoint_summary(loaded)["checkpoint_shards"]["tracebank"]["shard_count"] == 3
+
+
+def test_operator_promotion_requires_evidence_for_runtime_commit() -> None:
+    state = empty_checkpoint("operator-promotion")
+    operator = {"operator_id": "supporting_relation", "default_confidence": 0.84}
+
+    metadata = promote_operator_from_evidence(
+        state,
+        operator,
+        support_count=2,
+        shadow_pass_count=1,
+        trust_score=0.84,
+        source_refs=["shadow_replay:001"],
+    )
+
+    assert metadata["heat_tier"] == WARM
+    assert metadata["commit_permission"] == NORMAL_SUPPORT
+    assert operator["heat_tier"] == WARM
+    assert operator["commit_permission"] == NORMAL_SUPPORT
+    assert metadata["promotion_policy"] == "learned_operator_evidence_v1"
+
+
+def test_operator_promotion_keeps_contradicted_operator_in_quarantine() -> None:
+    state = empty_checkpoint("operator-promotion")
+    operator = {"operator_id": "overbroad_relation", "default_confidence": 0.95}
+
+    metadata = promote_operator_from_evidence(
+        state,
+        operator,
+        support_count=5,
+        shadow_pass_count=2,
+        contradiction_count=1,
+        trust_score=0.95,
+    )
+
+    assert metadata["heat_tier"] == QUARANTINE
+    assert metadata["commit_permission"] == SUPPORT_ONLY
+    assert operator["heat_tier"] == QUARANTINE
+    assert operator["commit_permission"] == SUPPORT_ONLY

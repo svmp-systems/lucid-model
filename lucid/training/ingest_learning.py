@@ -16,6 +16,7 @@ from lucid.training.source_context import (
     SOURCE_ENTITY_BY_ARTICLE,
     VENDOR_ARTIFACT_RE,
     VENDOR_REDIRECT_TARGETS,
+    source_entity_for_article,
 )
 
 FACET_BY_RELATION = {
@@ -77,6 +78,9 @@ CONTRAST_PHRASES = (
 DEFAULT_MAX_RELATIONS_PER_FACET = 8
 DEFAULT_MAX_RELATIONS_PER_CONCEPT = 24
 DEFAULT_MAX_CANDIDATE_TERMS = 120
+SCALE_MAX_RELATIONS_PER_FACET = 32
+SCALE_MAX_RELATIONS_PER_CONCEPT = 48
+SCALE_MAX_CANDIDATE_TERMS = 2000
 
 
 @dataclass(slots=True)
@@ -117,6 +121,10 @@ class IngestLearningReport:
     traces_deduplicated: int = 0
     article_sentence_counts: dict[str, int] = field(default_factory=dict)
     crosstalk_pass: bool | None = None
+    concepts_before_quality_filter: int = 0
+    concepts_after_quality_filter: int = 0
+    quality_rejections: dict[str, int] = field(default_factory=dict)
+    relation_quality_rejections: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +141,10 @@ class IngestLearningReport:
             "traces_deduplicated": self.traces_deduplicated,
             "article_sentence_counts": self.article_sentence_counts,
             "crosstalk_pass": self.crosstalk_pass,
+            "concepts_before_quality_filter": self.concepts_before_quality_filter,
+            "concepts_after_quality_filter": self.concepts_after_quality_filter,
+            "quality_rejections": self.quality_rejections,
+            "relation_quality_rejections": self.relation_quality_rejections,
         }
 
 
@@ -486,6 +498,7 @@ def format_ingest_audit_text(report: IngestLearningReport) -> str:
         f"contradiction splits: {report.contradiction_splits}",
         f"warm / probation / quarantine: {report.warm_concepts} / {report.probation_concepts} / {report.quarantine_concepts}",
         f"traces deduplicated: {report.traces_deduplicated}",
+        f"quality filter: {report.concepts_before_quality_filter} -> {report.concepts_after_quality_filter}",
         f"crosstalk pass: {report.crosstalk_pass}",
     ]
     if report.contradiction_events:
@@ -516,7 +529,9 @@ def is_vendor_artifact_concept(concept_id: str) -> bool:
     return bool(VENDOR_ARTIFACT_RE.match(str(concept_id or "").strip()))
 
 
-def build_mechanism_relation_aliases() -> list[dict[str, Any]]:
+def build_mechanism_relation_aliases(
+    source_entities: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     aliases: list[dict[str, Any]] = []
     for surface in sorted(MECHANISM_VERB_SURFACES):
         aliases.append(
@@ -528,7 +543,15 @@ def build_mechanism_relation_aliases() -> list[dict[str, Any]]:
                 "source": "scale_ingest_mechanism",
             }
         )
-    for article_id, entity in SOURCE_ENTITY_BY_ARTICLE.items():
+    entity_rows: dict[str, str] = dict(SOURCE_ENTITY_BY_ARTICLE)
+    if source_entities:
+        entity_rows.update(source_entities)
+    seen_entities: set[str] = set()
+    for article_id, entity in entity_rows.items():
+        entity_key = entity.strip().lower()
+        if not entity or entity_key in seen_entities:
+            continue
+        seen_entities.add(entity_key)
         key = article_id.split("_")[0]
         aliases.append(
             {
@@ -539,16 +562,18 @@ def build_mechanism_relation_aliases() -> list[dict[str, Any]]:
                 "source": "scale_ingest_source_entity",
             }
         )
-        aliases.append(
-            {
-                "alias_id": f"alias_vendor_{key}_quantum_concept",
-                "surface_pattern": f"{key} quantum",
-                "relation_candidates": ["concept", "quantum_computer"],
-                "confidence": 0.8,
-                "source": "scale_ingest_source_entity",
-            }
-        )
-        if key == "google":
+        if "quantum" in entity.lower() or article_id in SOURCE_ENTITY_BY_ARTICLE:
+            aliases.append(
+                {
+                    "alias_id": f"alias_vendor_{key}_quantum_concept",
+                    "surface_pattern": f"{key} quantum",
+                    "relation_candidates": ["concept", "quantum_computer"],
+                    "confidence": 0.8,
+                    "source": "scale_ingest_source_entity",
+                }
+            )
+        if key == "google" and "google quantum ai" not in seen_entities:
+            seen_entities.add("google quantum ai")
             aliases.append(
                 {
                     "alias_id": "alias_google_quantum_ai",
@@ -577,7 +602,7 @@ def consolidate_vendor_artifact_concepts(concepts: list[dict[str, Any]]) -> list
             article_id = source_refs[0] if source_refs else ""
             targets = VENDOR_REDIRECT_TARGETS.get(article_id, ["quantum_computer", "quantum_computing"])
             record = dict(relation)
-            entity = SOURCE_ENTITY_BY_ARTICLE.get(article_id, "")
+            entity = source_entity_for_article(article_id)
             if entity:
                 record["source_entity"] = entity
             for target_id in targets:

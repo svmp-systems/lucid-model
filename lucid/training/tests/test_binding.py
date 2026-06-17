@@ -6,8 +6,8 @@ from lucid.cli import main as lucid_main
 from lucid.cognition.input.cue import encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive
 from lucid.cognition.pipe_orchestrator.runner import OrchestratorConfig, OrchestratorRunner
-from lucid.cognition.reasoning.binding import BindingConfig, run_binding
-from lucid.ir.binding import BindingInput
+from lucid.cognition.reasoning.binding import BindingConfig, _apply_operators, run_binding
+from lucid.ir.binding import BindingInput, GraphEdge, GraphNode, LocalGraph
 from lucid.ir.common import ComputePolicy, Modality
 from lucid.ir.cue import CueCloud, RelationalActivationRequest, TraceActivationRequest
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
@@ -372,6 +372,47 @@ def test_binding_loads_concept_graph_operators_from_quantum_checkpoint(tmp_path:
         for frame in concept_frames
         for receipt in frame.operator_receipts
     )
+
+
+def test_binding_skips_quarantined_operator_effects() -> None:
+    graph = LocalGraph(
+        graph_id="graph_operator_gate",
+        nodes=[
+            GraphNode("concept:qubit", "concept", "qubit"),
+            GraphNode("value:unit", "value", "unit"),
+            GraphNode("value:superposition", "value", "superposition"),
+        ],
+        edges=[
+            GraphEdge("e_type", "relation", "concept:qubit", "value:unit", label="type_of"),
+            GraphEdge(
+                "e_property",
+                "relation",
+                "concept:qubit",
+                "value:superposition",
+                label="property",
+            ),
+        ],
+    )
+    operator = {
+        "operator_id": "concept_relations_support_definition",
+        "heat_tier": "quarantine",
+        "commit_permission": "support_only",
+        "pattern": [
+            ["relation", "type_of", "X", "Y"],
+            ["relation", "property", "X", "Z"],
+        ],
+        "effects": [["supports", "definition_support", "X", "Y"]],
+    }
+
+    _apply_operators(graph, [operator])
+
+    assert "definition_support" not in {edge.label for edge in graph.edges}
+    operator["heat_tier"] = "warm"
+    operator["commit_permission"] = "normal_support"
+
+    _apply_operators(graph, [operator])
+
+    assert "definition_support" in {edge.label for edge in graph.edges}
 
 
 def test_cli_bind_smoke(capsys) -> None:
