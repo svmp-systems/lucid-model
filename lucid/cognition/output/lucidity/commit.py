@@ -10,10 +10,19 @@ from lucid.training.source_context import (
     DEFINITION_RELATIONS,
     MECHANISM_RELATIONS,
     VENDOR_DEFINITION_RELATIONS,
+    concept_definition_primary_basin,
+    is_cross_sense_target,
+    is_mechanism_like_target,
     is_mechanism_query_surfaces,
     is_renderable_definition_target,
+    is_speech_basin,
     is_term_definition_query_surfaces,
     is_vendor_definition_query_surfaces,
+    parse_concept_query_with_context,
+    preferred_definition_concept,
+    score_definition_target_for_concept,
+    MIN_DEFINITION_COMMIT_SCORE,
+    MIN_DEFINITION_RENDER_SCORE,
     vendor_source_from_surfaces,
 )
 from lucid.ir.basins import BasinAssembly, BasinOutput, CandidateBasinState
@@ -110,13 +119,39 @@ def _rollout_artifact(projection: ProjectorOutput | None) -> tuple[dict, Project
     return artifact, rollout
 
 
+def _session_context_from_input(inp: LucidityInput) -> dict[str, object]:
+    extra = inp.perceptual_evidence_graph.provenance.extra or {}
+    session_context = extra.get("session_context")
+    if isinstance(session_context, dict):
+        return session_context
+    prior = extra.get("prior_context")
+    if isinstance(prior, dict):
+        nested = prior.get("session_context")
+        if isinstance(nested, dict):
+            return nested
+    return {}
+
+
 def _cue_surfaces(inp: LucidityInput) -> set[str]:
     surfaces: set[str] = set()
     for unit in inp.perceptual_evidence_graph.candidate_units:
         key = normalize_cue_key(unit.surface)
         if key:
             surfaces.add(key)
+    raw = inp.perceptual_evidence_graph.provenance.extra.get("raw_text")
+    if isinstance(raw, str):
+        parsed = parse_concept_query_with_context(raw.strip(), _session_context_from_input(inp))
+        if parsed:
+            _, concept_id, _ = parsed
+            surfaces.add(concept_id)
     return surfaces
+
+
+def _concept_query_from_input(inp: LucidityInput) -> tuple[str, str, str] | None:
+    raw = inp.perceptual_evidence_graph.provenance.extra.get("raw_text")
+    if isinstance(raw, str):
+        return parse_concept_query_with_context(raw.strip(), _session_context_from_input(inp))
+    return None
 
 
 def _active_mechanism_frame(inp: LucidityInput) -> CandidateFrame | None:
@@ -146,7 +181,9 @@ def _relation_sources(unit: RenderUnit) -> list[str]:
     return refs
 
 
-def _definition_target_score(target: str) -> float:
+def _definition_target_score(target: str, *, concept_id: str = "") -> float:
+    if concept_id:
+        return score_definition_target_for_concept(target, concept_id)
     cleaned = " ".join(str(target or "").strip().split()).lower()
     if not cleaned:
         return -1.0
@@ -166,13 +203,20 @@ def _definition_basin_render_units(
     state: CandidateBasinState,
     *,
     max_units: int = 3,
+    concept_id: str = "",
 ) -> list[RenderUnit]:
+    subject_key = concept_id or str(
+        (state.quantized_payload or {}).get("concept_id")
+        or (state.quantized_payload or {}).get("canonical_label")
+        or ""
+    )
     units = [
         unit
         for unit in _basin_relation_render_units(state, relation_names=DEFINITION_RELATIONS)
         if is_renderable_definition_target(
             str(unit.payload.get("target") or ""),
             relation=str(unit.payload.get("relation") or ""),
+            concept_id=subject_key,
         )
     ]
     if not units:
@@ -189,41 +233,173 @@ def _definition_basin_render_units(
         type_candidates.extend(by_relation.get(rel, []))
     type_candidates.sort(
         key=lambda unit: (
-            _definition_target_score(str(unit.payload.get("target") or "")),
+            _definition_target_score(
+                str(unit.payload.get("target") or ""),
+                concept_id=subject_key,
+            ),
             unit.confidence,
         ),
         reverse=True,
     )
+    type_candidates = [
+        unit
+        for unit in type_candidates
+        if _definition_target_score(str(unit.payload.get("target") or ""), concept_id=subject_key)
+        >= MIN_DEFINITION_COMMIT_SCORE
+    ]
     if not type_candidates:
-        return units[:1]
+        return []
 
     anchor = type_candidates[0]
-    preferred_sources = set(_relation_sources(anchor))
-    priority = [
-        "type_of",
-        "is_a",
-        "kind_of",
-        "property",
-        "has_property",
-        "capability",
-        "can",
-        "challenge",
-        "limitation",
-    ]
-    picked: list[RenderUnit] = [anchor]
-    for rel in priority[1:]:
-        candidates = [
+    return [anchor]
+
+
+def _mechanism_basin_render_units(
+    state: CandidateBasinState,
+    *,
+    concept_id: str = "",
+    max_units: int = 1,
+) -> list[RenderUnit]:
+    lookup = _norm_label(concept_id)
+    for relation_names in (
+        frozenset({"uses"}),
+        frozenset({"capability"}),
+        MECHANISM_RELATIONS,
+    ):
+        units = [
             unit
-            for unit in by_relation.get(rel, [])
-            if not preferred_sources or set(_relation_sources(unit)) & preferred_sources
+            for unit in _basin_relation_render_units(state, relation_names=relation_names)
+            if is_renderable_definition_target(
+                str(unit.payload.get("target") or ""),
+                relation=str(unit.payload.get("relation") or ""),
+            )
+            and not is_cross_sense_target(str(unit.payload.get("target") or ""), concept_id or lookup)
         ]
-        if not candidates:
-            continue
-        candidates.sort(key=lambda unit: (-unit.confidence, len(str(unit.payload.get("target") or ""))))
-        picked.append(candidates[0])
-        if len(picked) >= max_units:
-            break
-    return picked
+        if lookup:
+            scoped = [
+                unit
+                for unit in units
+                if _norm_label(unit.payload.get("subject")) in {lookup, preferred_definition_concept(lookup)}
+            ]
+            if scoped:
+                units = scoped
+        units.sort(
+            key=lambda unit: (
+                _definition_target_score(
+                    str(unit.payload.get("target") or ""),
+                    concept_id=concept_id,
+                ),
+                unit.confidence,
+            ),
+            reverse=True,
+        )
+        if units:
+            trimmed: list[RenderUnit] = []
+            for unit in units[:max_units]:
+                payload = dict(unit.payload)
+                target = str(payload.get("target") or "").strip()
+                words = target.split()
+                if len(words) > 24:
+                    payload["target"] = " ".join(words[:24]).rstrip(",;") + "..."
+                trimmed.append(
+                    RenderUnit(
+                        unit_id=unit.unit_id,
+                        unit_type=unit.unit_type,
+                        text_intent=unit.text_intent,
+                        payload=payload,
+                        confidence=unit.confidence,
+                        required=unit.required,
+                        source_refs=list(unit.source_refs),
+                        scope_frame_id=unit.scope_frame_id,
+                    )
+                )
+            return trimmed
+    return []
+
+
+def concept_query_render_units(inp: LucidityInput) -> list[RenderUnit]:
+    parsed = _concept_query_from_input(inp)
+    if not parsed:
+        return []
+    _, concept_id, frame_type = parsed
+    render_concept = preferred_definition_concept(concept_id)
+    relation_names = DEFINITION_RELATIONS if frame_type == "definition_query" else MECHANISM_RELATIONS
+
+    graph_units = _graph_relation_render_units(
+        inp,
+        subject_filter=render_concept,
+        relation_names=relation_names,
+    )
+    graph_units = [
+        unit
+        for unit in graph_units
+        if frame_type == "mechanism_query"
+        or (
+            str(unit.payload.get("relation") or "").strip().lower()
+            in {"type_of", "is_a", "kind_of"}
+            and is_renderable_definition_target(
+                str(unit.payload.get("target") or ""),
+                relation=str(unit.payload.get("relation") or ""),
+                concept_id=render_concept,
+            )
+        )
+    ]
+    if graph_units:
+        if frame_type == "definition_query":
+            graph_units.sort(
+                key=lambda unit: (
+                    _definition_target_score(
+                        str(unit.payload.get("target") or ""),
+                        concept_id=render_concept,
+                    ),
+                    unit.confidence,
+                ),
+                reverse=True,
+            )
+            graph_units = [
+                unit
+                for unit in graph_units
+                if _definition_target_score(
+                    str(unit.payload.get("target") or ""),
+                    concept_id=render_concept,
+                )
+                >= MIN_DEFINITION_COMMIT_SCORE
+            ]
+            return graph_units[:1]
+        graph_units = [
+            unit
+            for unit in graph_units
+            if not is_cross_sense_target(str(unit.payload.get("target") or ""), render_concept)
+        ]
+        graph_units.sort(
+            key=lambda unit: (
+                1 if str(unit.payload.get("relation") or "") in MECHANISM_RELATIONS else 0,
+                1 if is_mechanism_like_target(str(unit.payload.get("target") or "")) else 0,
+                len(str(unit.payload.get("target") or "").split()),
+                unit.confidence,
+            ),
+            reverse=True,
+        )
+        if not graph_units:
+            return []
+        return graph_units[:1]
+
+    basin_id = concept_definition_primary_basin(
+        inp.basin_output.candidate_basin_states,
+        concept_id,
+        frame_type=frame_type,
+    )
+    if not basin_id:
+        return []
+    state = next(
+        (row for row in inp.basin_output.candidate_basin_states if row.basin_id == basin_id),
+        None,
+    )
+    if state is None:
+        return []
+    if frame_type == "mechanism_query":
+        return _mechanism_basin_render_units(state, concept_id=render_concept)
+    return _definition_basin_render_units(state, concept_id=render_concept)
 
 
 def _definition_basin_state_for_query(
@@ -547,6 +723,7 @@ def _committed_render_units(
 
     graph_units: list[RenderUnit] = []
     basin_relation_units: list[RenderUnit] = []
+    parsed_query = _concept_query_from_input(inp)
 
     if mechanism_frame is not None:
         graph_units = _graph_relation_render_units(
@@ -606,6 +783,9 @@ def _committed_render_units(
         if def_state is not None:
             basin_relation_units = _definition_basin_render_units(def_state)
         graph_units = []
+    elif parsed_query is not None:
+        basin_relation_units = concept_query_render_units(inp)
+        graph_units = []
     else:
         graph_units = _graph_relation_render_units(inp, subject_filter=primary_subject)
         if primary_state is not None and not graph_units:
@@ -641,7 +821,7 @@ def _committed_render_units(
                 source_refs=basin_refs,
             )
         )
-        if state is not None and not graph_units and not basin_relation_units:
+        if state is not None and not graph_units and not basin_relation_units and parsed_query is None:
             basin_relation_units = _basin_relation_render_units(state)
 
     units.extend(graph_units)
@@ -694,6 +874,16 @@ def build_committed_state(
 
     primary_basin_id = summary.top_basin_id
     cue_surfaces = _cue_surfaces(inp)
+    parsed_query = _concept_query_from_input(inp)
+    if parsed_query is not None:
+        _, concept_id, frame_type = parsed_query
+        concept_basin = concept_definition_primary_basin(
+            inp.basin_output.candidate_basin_states,
+            concept_id,
+            frame_type=frame_type,
+        )
+        if concept_basin:
+            primary_basin_id = concept_basin
     if is_vendor_definition_query_surfaces(cue_surfaces):
         vendor_basin = _vendor_definition_primary_basin(inp)
         if not vendor_basin:
@@ -703,6 +893,15 @@ def build_committed_state(
                     break
         if vendor_basin:
             primary_basin_id = vendor_basin
+    if primary_basin_id and is_speech_basin(primary_basin_id) and parsed_query is not None:
+        _, concept_id, frame_type = parsed_query
+        concept_basin = concept_definition_primary_basin(
+            inp.basin_output.candidate_basin_states,
+            concept_id,
+            frame_type=frame_type,
+        )
+        if concept_basin:
+            primary_basin_id = concept_basin
     for frame in inp.binding_output.candidate_frames:
         if frame.frame_type != "mechanism_query" or frame.unresolved_slot_names:
             continue

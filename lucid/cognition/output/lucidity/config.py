@@ -9,19 +9,31 @@ from dataclasses import dataclass
 class LucidityConfig:
     margin_threshold_answer: float = 0.08
     margin_threshold_chat: float = 0.0
+    margin_threshold_knowledge: float = 0.08
     margin_threshold_solve_grid: float = 0.10
     coverage_threshold: float = 0.55
     coherence_threshold: float = 0.65
     binding_stability_threshold: float = 0.45
+    binding_stability_threshold_source_backed: float = 0.1
+    coherence_threshold_source_backed: float = 0.55
     projection_fit_threshold: float = 0.85
     contradiction_severity_threshold: float = 0.6
     maturity_hot_fraction: float = 0.5
+    renderability_threshold: float = 0.35
     max_iterations: int = 3
     require_projection_on_grid_pre_check: bool = True
     salience_cutoff: float = 0.25
 
-    def margin_threshold(self, task_intent: str, pass_kind: str) -> float:
+    def margin_threshold(
+        self,
+        task_intent: str,
+        pass_kind: str,
+        *,
+        knowledge_query: bool = False,
+    ) -> float:
         task = normalize_task_intent(task_intent)
+        if knowledge_query:
+            return self.margin_threshold_knowledge
         if task == "solve_grid" and pass_kind == "final_check":
             return self.margin_threshold_solve_grid
         if task == "solve_grid":

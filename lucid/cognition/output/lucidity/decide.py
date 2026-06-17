@@ -8,12 +8,12 @@ from lucid.cognition.output.lucidity.commit import (
     projector_targets,
 )
 from lucid.cognition.output.lucidity.chat_speech import try_social_speech_decision
-from lucid.cognition.input.cue.encoder import normalize_cue_key
 from lucid.cognition.output.lucidity.config import (
     LucidityConfig,
     normalize_pass_kind,
     normalize_task_intent,
 )
+from lucid.cognition.output.lucidity.evidence_quality import is_knowledge_query, source_backed_renderable_basin
 from lucid.ir.common import DecoderMode, LucidityDecision, SearchTarget
 from lucid.ir.lucidity import (
     ConfidenceSummary,
@@ -22,16 +22,6 @@ from lucid.ir.lucidity import (
     LucidityInput,
     LucidityOutput,
     SearchDirectives,
-)
-from lucid.training.source_context import (
-    GERUND_TARGET_RE,
-    MECHANISM_RELATIONS,
-    MECHANISM_VERB_SURFACES,
-    VENDOR_CUE_TO_SOURCE,
-    is_mechanism_query_surfaces,
-    is_vendor_definition_query_surfaces,
-    vendor_frame_sense_unresolved_ok,
-    vendor_source_from_surfaces,
 )
 
 
@@ -44,262 +34,13 @@ def _all_named_checks_pass(checks: LucidityCheckResults, *, skip_projection: boo
         checks.scope_check,
         checks.contradiction_check,
         checks.maturity_check,
+        checks.renderability_check,
         checks.risk_check,
     ]
     if not skip_projection and checks.projection_fit_check is not None:
         if checks.projection_fit_check.details.get("status") != "not_applicable":
             items.append(checks.projection_fit_check)
     return all(item is not None and item.passed for item in items)
-
-
-def _has_supported_local_graph(inp: LucidityInput) -> bool:
-    for frame in inp.binding_output.candidate_frames:
-        for graph in frame.local_graphs:
-            if graph.family != "concept":
-                continue
-            if any(
-                edge.edge_kind == "relation"
-                and edge.confidence >= 0.5
-                and bool(edge.provenance_refs)
-                and not edge.edge_id.startswith("alias_")
-                for edge in graph.edges
-            ):
-                return True
-    return False
-
-
-def _top_source_backed_relation_basin_ready(
-    inp: LucidityInput,
-    checks: LucidityCheckResults,
-) -> bool:
-    task = normalize_task_intent(inp.task_intent)
-    if task not in {"answer", "chat"}:
-        return False
-
-    summary = inp.basin_output.competition_summary
-    if not summary.top_basin_id:
-        return False
-
-    required_checks = [
-        checks.margin_check,
-        checks.coverage_check,
-        checks.scope_check,
-        checks.contradiction_check,
-        checks.maturity_check,
-        checks.risk_check,
-    ]
-    if any(item is None or not item.passed for item in required_checks):
-        return False
-
-    top = next(
-        (
-            state
-            for state in inp.basin_output.candidate_basin_states
-            if state.basin_id == summary.top_basin_id
-        ),
-        None,
-    )
-    if top is None or top.energy <= 0.0:
-        return False
-    if top.coherence_score < 0.7:
-        return False
-
-    payload = top.quantized_payload if isinstance(top.quantized_payload, dict) else {}
-    relations = payload.get("relations")
-    if not isinstance(relations, list) or not relations:
-        return False
-
-    for relation in relations:
-        if not isinstance(relation, dict):
-            continue
-        rel_name = str(relation.get("relation") or "").strip()
-        target = str(relation.get("target") or "").strip()
-        source_refs = relation.get("source_refs") or top.source_refs
-        has_source_ref = any(str(ref).strip() for ref in source_refs)
-        confidence = float(relation.get("confidence", top.energy) or 0.0)
-        if rel_name and target and has_source_ref and confidence >= 0.5:
-            if rel_name == "type_of" and GERUND_TARGET_RE.match(target):
-                continue
-            return True
-    return False
-
-
-def _perception_surfaces(inp: LucidityInput) -> set[str]:
-    surfaces: set[str] = set()
-    graph = inp.perceptual_evidence_graph
-    if graph is None:
-        return surfaces
-    for unit in graph.candidate_units:
-        key = normalize_cue_key(unit.surface)
-        if key:
-            surfaces.add(key)
-    return surfaces
-
-
-def _is_mechanism_query(inp: LucidityInput) -> bool:
-    return is_mechanism_query_surfaces(_perception_surfaces(inp))
-
-
-def _is_vendor_definition_query(inp: LucidityInput) -> bool:
-    return is_vendor_definition_query_surfaces(_perception_surfaces(inp))
-
-
-def _top_source_backed_mechanism_basin_ready(
-    inp: LucidityInput,
-    checks: LucidityCheckResults,
-) -> bool:
-    if not _is_mechanism_query(inp):
-        return False
-
-    task = normalize_task_intent(inp.task_intent)
-    if task not in {"answer", "chat"}:
-        return False
-
-    summary = inp.basin_output.competition_summary
-    if not summary.top_basin_id:
-        return False
-
-    required_checks = [
-        checks.margin_check,
-        checks.coverage_check,
-        checks.scope_check,
-        checks.contradiction_check,
-        checks.maturity_check,
-        checks.risk_check,
-    ]
-    if any(item is None or not item.passed for item in required_checks):
-        return False
-
-    top = next(
-        (
-            state
-            for state in inp.basin_output.candidate_basin_states
-            if state.basin_id == summary.top_basin_id
-        ),
-        None,
-    )
-    if top is None or top.energy <= 0.0:
-        return False
-    if top.coherence_score < 0.45:
-        return False
-
-    payload = top.quantized_payload if isinstance(top.quantized_payload, dict) else {}
-    relations = payload.get("relations")
-    if not isinstance(relations, list) or not relations:
-        return False
-
-    surfaces = _perception_surfaces(inp)
-    vendor = next((cue for cue in VENDOR_CUE_TO_SOURCE if cue in surfaces), None)
-    expected_source = VENDOR_CUE_TO_SOURCE.get(vendor or "", "")
-
-    for relation in relations:
-        if not isinstance(relation, dict):
-            continue
-        rel_name = str(relation.get("relation") or "").strip()
-        target = str(relation.get("target") or "").strip()
-        source_refs = relation.get("source_refs") or top.source_refs
-        has_source_ref = any(str(ref).strip() for ref in source_refs)
-        confidence = float(relation.get("confidence", top.energy) or 0.0)
-        if rel_name not in MECHANISM_RELATIONS or not target or not has_source_ref:
-            continue
-        if confidence < 0.5:
-            continue
-        if expected_source and expected_source not in [str(ref) for ref in source_refs]:
-            continue
-        return True
-    return False
-
-
-def _required_checks_without_binding_coherence(checks: LucidityCheckResults) -> bool:
-    required = [
-        checks.margin_check,
-        checks.coverage_check,
-        checks.scope_check,
-        checks.contradiction_check,
-        checks.maturity_check,
-        checks.risk_check,
-    ]
-    return all(item is not None and item.passed for item in required)
-
-
-def _mechanism_frame_commit_ready(inp: LucidityInput, checks: LucidityCheckResults) -> bool:
-    if not _is_mechanism_query(inp):
-        return False
-    if not _required_checks_without_binding_coherence(checks):
-        return False
-
-    for frame in inp.binding_output.candidate_frames:
-        if frame.frame_type != "mechanism_query":
-            continue
-        if frame.unresolved_slot_names:
-            continue
-        if not frame.supporting_trace_ids:
-            continue
-        if frame.confidence < 0.45:
-            continue
-        if any(str(trace_id).startswith("t_claim_") for trace_id in frame.supporting_trace_ids):
-            return True
-    return False
-
-
-def _vendor_definition_frame_commit_ready(inp: LucidityInput, checks: LucidityCheckResults) -> bool:
-    surfaces = _perception_surfaces(inp)
-    vendor = next((cue for cue in VENDOR_CUE_TO_SOURCE if cue in surfaces), None)
-    if not vendor or "quantum" not in surfaces or _is_mechanism_query(inp):
-        return False
-    if not _is_vendor_definition_query(inp):
-        return False
-    if not _required_checks_without_binding_coherence(checks):
-        return False
-
-    allowed_traces = (
-        "t_term_quantum_computer",
-        "t_term_quantum_computing",
-    )
-    for frame in inp.binding_output.candidate_frames:
-        if not vendor_frame_sense_unresolved_ok(frame.unresolved_slot_names):
-            continue
-        if frame.confidence < 0.35:
-            continue
-        traces = {str(trace_id) for trace_id in frame.supporting_trace_ids}
-        if traces & set(allowed_traces):
-            return True
-        if any(trace_id.startswith("t_claim_quantum_computer_") for trace_id in traces):
-            return True
-        if any(trace_id.startswith("t_claim_quantum_computing_") for trace_id in traces):
-            return True
-    return False
-
-
-def _vendor_definition_basin_ready(inp: LucidityInput, checks: LucidityCheckResults) -> bool:
-    if not _is_vendor_definition_query(inp):
-        return False
-    if not _required_checks_without_binding_coherence(checks):
-        return False
-
-    expected_source = vendor_source_from_surfaces(_perception_surfaces(inp))
-    for state in sorted(inp.basin_output.candidate_basin_states, key=lambda row: row.energy, reverse=True):
-        if "definition" not in state.basin_id:
-            continue
-        if not any(token in state.basin_id for token in ("quantum_computer", "quantum_computing")):
-            continue
-        trace_ids = {str(trace_id) for trace_id in state.supporting_trace_ids}
-        if trace_ids & {"t_term_quantum_computer", "t_term_quantum_computing"}:
-            return True
-        if not any(trace_id.startswith("t_claim_quantum_computer_") for trace_id in trace_ids):
-            continue
-        payload = state.quantized_payload if isinstance(state.quantized_payload, dict) else {}
-        relations = payload.get("relations") if isinstance(payload.get("relations"), list) else []
-        refs = [str(ref) for ref in state.source_refs if str(ref).strip()]
-        if expected_source and expected_source in refs:
-            return True
-        for relation in relations:
-            if not isinstance(relation, dict):
-                continue
-            rel_refs = [str(ref) for ref in relation.get("source_refs") or refs if str(ref).strip()]
-            if expected_source and expected_source in rel_refs:
-                return True
-    return False
 
 
 def decoder_policy_for(
@@ -417,6 +158,7 @@ def decide(
     binding = checks.binding_stability_check
     scope = checks.scope_check
     contradiction = checks.contradiction_check
+    renderability = checks.renderability_check
     risk = checks.risk_check
 
     commit_ready = _all_named_checks_pass(checks, skip_projection=inp.projection_output is None)
@@ -485,72 +227,26 @@ def decide(
             audit_notes=notes,
         )
 
-    if _mechanism_frame_commit_ready(inp, checks):
-        notes.append("lucidity:commit_mechanism_frame")
+    if is_knowledge_query(inp) and renderability is not None and not renderability.passed:
+        notes.append("lucidity:preserve_ambiguity_unrenderable_memory")
         return LucidityOutput(
-            decision=LucidityDecision.COMMIT,
+            decision=LucidityDecision.PRESERVE_AMBIGUITY,
             decoder_policy=decoder_policy_for(
-                LucidityDecision.COMMIT,
+                LucidityDecision.PRESERVE_AMBIGUITY,
                 task_intent=inp.task_intent,
                 checks=checks,
             ),
-            committed_state=build_committed_state(inp),
+            preserved_hypotheses=preserved_hypotheses_from_basins(inp),
             audit_notes=notes,
         )
 
-    if _vendor_definition_frame_commit_ready(inp, checks):
-        notes.append("lucidity:commit_vendor_definition_frame")
-        return LucidityOutput(
-            decision=LucidityDecision.COMMIT,
-            decoder_policy=decoder_policy_for(
-                LucidityDecision.COMMIT,
-                task_intent=inp.task_intent,
-                checks=checks,
-            ),
-            committed_state=build_committed_state(inp),
-            audit_notes=notes,
-        )
-
-    if _vendor_definition_basin_ready(inp, checks):
-        notes.append("lucidity:commit_vendor_definition_basin")
-        return LucidityOutput(
-            decision=LucidityDecision.COMMIT,
-            decoder_policy=decoder_policy_for(
-                LucidityDecision.COMMIT,
-                task_intent=inp.task_intent,
-                checks=checks,
-            ),
-            committed_state=build_committed_state(inp),
-            audit_notes=notes,
-        )
-
-    if _top_source_backed_mechanism_basin_ready(inp, checks):
-        notes.append("lucidity:commit_mechanism_query")
-        return LucidityOutput(
-            decision=LucidityDecision.COMMIT,
-            decoder_policy=decoder_policy_for(
-                LucidityDecision.COMMIT,
-                task_intent=inp.task_intent,
-                checks=checks,
-            ),
-            committed_state=build_committed_state(inp),
-            audit_notes=notes,
-        )
-
-    if _top_source_backed_relation_basin_ready(inp, checks):
-        notes.append("lucidity:commit_source_backed_basin")
-        return LucidityOutput(
-            decision=LucidityDecision.COMMIT,
-            decoder_policy=decoder_policy_for(
-                LucidityDecision.COMMIT,
-                task_intent=inp.task_intent,
-                checks=checks,
-            ),
-            committed_state=build_committed_state(inp),
-            audit_notes=notes,
-        )
-
-    if binding is not None and not binding.passed and coverage is not None and coverage.passed:
+    if (
+        binding is not None
+        and not binding.passed
+        and coverage is not None
+        and coverage.passed
+        and not source_backed_renderable_basin(inp)
+    ):
         rebind_ids = [frame.frame_id for frame in inp.binding_output.candidate_frames if frame.unresolved_slot_names]
         if not rebind_ids:
             rebind_ids = [frame.frame_id for frame in inp.binding_output.candidate_frames[:2]]
@@ -576,31 +272,6 @@ def decide(
                 allow_new_frames=True,
                 extra={"allow_provisional_basins": True},
             ),
-            audit_notes=notes,
-        )
-
-    if (
-        _has_supported_local_graph(inp)
-        and coverage is not None
-        and coverage.passed
-        and checks.coherence_check is not None
-        and checks.coherence_check.passed
-        and binding is not None
-        and binding.passed
-        and scope is not None
-        and scope.passed
-        and risk is not None
-        and risk.passed
-    ):
-        notes.append("lucidity:commit_local_graph")
-        return LucidityOutput(
-            decision=LucidityDecision.COMMIT,
-            decoder_policy=decoder_policy_for(
-                LucidityDecision.COMMIT,
-                task_intent=inp.task_intent,
-                checks=checks,
-            ),
-            committed_state=build_committed_state(inp),
             audit_notes=notes,
         )
 
@@ -636,6 +307,13 @@ def decide(
                 preserved_hypotheses=preserved_hypotheses_from_basins(inp),
                 audit_notes=notes,
             )
+
+    if commit_ready and is_knowledge_query(inp):
+        from lucid.cognition.output.lucidity.commit import concept_query_render_units
+
+        if not concept_query_render_units(inp):
+            commit_ready = False
+            notes.append("lucidity:preserve_ambiguity_no_render_units")
 
     if commit_ready:
         notes.append("lucidity:commit")

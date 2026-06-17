@@ -90,13 +90,55 @@ def perceive(
         graph = perceive_llm(inp, cfg, context=context)
         if isinstance(inp.raw_payload, str):
             infer_unit_positions(graph, inp.raw_payload)
+            _attach_session_context(graph, inp.prior_context)
+            _enrich_concept_query_perception(graph, inp.raw_payload)
         return graph
     if modality == Modality.GRID:
         return _perceive_grid(inp)
     graph = _perceive_text(inp)
     if isinstance(inp.raw_payload, str):
         infer_unit_positions(graph, inp.raw_payload)
+        _attach_session_context(graph, inp.prior_context)
+        _enrich_concept_query_perception(graph, inp.raw_payload)
     return graph
+
+
+def _attach_session_context(graph: PerceptualEvidenceGraph, prior_context: object) -> None:
+    if not isinstance(prior_context, dict):
+        return
+    session_context = prior_context.get("session_context")
+    if isinstance(session_context, dict):
+        graph.provenance.extra["session_context"] = session_context
+
+
+def _enrich_concept_query_perception(graph: PerceptualEvidenceGraph, raw_text: str) -> None:
+    from lucid.training.source_context import parse_concept_query_with_context
+
+    session_context = graph.provenance.extra.get("session_context")
+    parsed = parse_concept_query_with_context(
+        raw_text.strip(),
+        session_context if isinstance(session_context, dict) else None,
+    )
+    if not parsed:
+        return
+    topic_surface, concept_id, frame_type = parsed
+    graph.provenance.extra["raw_text"] = raw_text.strip()
+    graph.provenance.extra["concept_query"] = {
+        "topic_surface": topic_surface,
+        "concept_id": concept_id,
+        "frame_type": frame_type,
+    }
+    unit_ids = [unit.unit_id for unit in graph.candidate_units if unit.unit_id]
+    if not unit_ids:
+        return
+    graph.candidate_regions.append(
+        CandidateRegion(
+            region_id="r_concept_query",
+            role_hint=frame_type,
+            member_unit_ids=unit_ids,
+            confidence=0.85,
+        )
+    )
 
 
 def infer_unit_positions(graph: PerceptualEvidenceGraph, raw_text: str) -> None:

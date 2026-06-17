@@ -18,6 +18,10 @@ from lucid.cognition.reasoning.cue_routes import (
     evidence_cue_routes,
     has_competing_routes,
 )
+from lucid.cognition.session_continuity import (
+    concept_topics_from_carryover,
+    pipeline_carryover_from_session_context,
+)
 from lucid.cognition.memory.basin_bank import normalize_family_hint
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy
@@ -71,6 +75,13 @@ class ContextOperator:
             assignments,
             inp.perceptual_evidence_graph,
             inp.binding_candidate_frames,
+        )
+        links.extend(
+            self._session_concept_links(
+                context_frames,
+                inp.perceptual_evidence_graph,
+                inp,
+            )
         )
         gates = self._build_gates(context_frames, assignments, links, inp)
         pressures = self._build_local_pressures(context_frames, assignments, inp)
@@ -265,6 +276,63 @@ class ContextOperator:
             FrameLink(source_frame_id=a, target_frame_id=b, link_type=kind, weight=round(weight, 3))
             for (a, b, kind), weight in sorted(links.items())
         ]
+
+    def _session_concept_links(
+        self,
+        context_frames: list[ContextFrame],
+        graph: PerceptualEvidenceGraph,
+        inp: ContextOpInput,
+    ) -> list[FrameLink]:
+        extra = graph.provenance.extra if graph.provenance.extra else {}
+        session_context = extra.get("session_context")
+        carryover = pipeline_carryover_from_session_context(
+            session_context if isinstance(session_context, dict) else None
+        )
+        topics = concept_topics_from_carryover(carryover)
+        if not topics:
+            return []
+
+        prior_ids = {
+            frame.context_frame_id
+            for frame in inp.prior_context_frames
+            if frame.context_frame_id
+        }
+        current_by_type: dict[str, list[str]] = {}
+        for frame in inp.binding_candidate_frames:
+            if frame.frame_type in {"definition_query", "mechanism_query", "concept_query"}:
+                current_by_type.setdefault(frame.frame_type, []).append(_context_id(frame.frame_id))
+
+        links: list[FrameLink] = []
+        for prior in inp.prior_context_frames:
+            if not prior.member_frame_ids:
+                continue
+            prior_member = prior.member_frame_ids[0]
+            prior_context_id = prior.context_frame_id
+            for frame_type, member_ids in current_by_type.items():
+                if frame_type != "mechanism_query":
+                    continue
+                for member_id in member_ids:
+                    current_context_id = _context_id(member_id)
+                    if current_context_id == prior_context_id:
+                        continue
+                    links.append(
+                        FrameLink(
+                            source_frame_id=prior_context_id,
+                            target_frame_id=current_context_id,
+                            link_type="session_concept_followup",
+                            weight=0.82,
+                        )
+                    )
+                    for topic in topics:
+                        links.append(
+                            FrameLink(
+                                source_frame_id=prior_context_id,
+                                target_frame_id=current_context_id,
+                                link_type=f"concept:{topic}",
+                                weight=0.75,
+                            )
+                        )
+        return links
 
     def _unit_context_map(
         self,

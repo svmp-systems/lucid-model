@@ -387,3 +387,170 @@ def filter_concepts(
         "concept_rejections": dict(rejections),
         "relation_rejections": dict(relation_rejections),
     }
+
+
+# Discourse / page-flow subjects that passed first-pass filter but are not topic concepts.
+RETENTION_DISCOURSE_SUBJECTS = frozenset(
+    {
+        "ability",
+        "academic",
+        "access",
+        "accuracy",
+        "accurate",
+        "action",
+        "actually",
+        "alternative",
+        "although",
+        "apply",
+        "article",
+        "aspect",
+        "assume",
+        "assumption",
+        "book",
+        "certain",
+        "cluster",
+        "connection",
+        "convergence",
+        "correctly",
+        "dataset",
+        "dimension",
+        "distribution",
+        "dropout",
+        "ensemble",
+        "expectation",
+        "forward",
+        "function",
+        "fundamental",
+        "game",
+        "general",
+        "goal",
+        "happen",
+        "input",
+        "interpretability",
+        "intelligence",
+        "language",
+        "larger",
+        "limitation",
+        "linear",
+        "long",
+        "many",
+        "mean",
+        "monte",
+        "network",
+        "openai",
+        "optimal",
+        "order",
+        "parameter",
+        "player",
+        "procedure",
+        "randomly",
+        "release",
+        "require",
+        "search",
+        "significant",
+        "since",
+        "single",
+        "sometime",
+        "sparse",
+        "special",
+        "text",
+        "though",
+        "time",
+        "transition",
+        "vision",
+        "vocabulary",
+        "weight",
+        "well",
+        "whether",
+        "word",
+    }
+)
+
+_DOMAIN_TERM_PARTS = frozenset(
+    {
+        "learning",
+        "network",
+        "model",
+        "attention",
+        "transformer",
+        "gradient",
+        "boltzmann",
+        "hopfield",
+        "energy",
+        "encoder",
+        "decoder",
+        "embedding",
+        "neural",
+        "machine",
+        "loss",
+        "layer",
+        "training",
+        "inference",
+        "algorithm",
+        "activation",
+        "convolutional",
+        "recurrent",
+        "reinforcement",
+        "generative",
+        "language",
+        "autoencoder",
+        "diffusion",
+        "markov",
+        "monte",
+        "carlo",
+        "ising",
+        "softmax",
+        "backpropagation",
+        "classification",
+        "regression",
+        "optimization",
+    }
+)
+
+
+def reject_concept_retention(concept: dict[str, Any]) -> str | None:
+    """Stricter gate for keeping concepts in a trained checkpoint."""
+    concept_id = str(concept.get("concept_id") or "")
+    if not concept_id:
+        return "empty_concept_id"
+    if "__reading_" in concept_id or str(concept.get("branch_reason") or "") == "contradiction_split":
+        return "contradiction_branch"
+    id_reason = reject_concept_id(concept_id)
+    if id_reason:
+        return id_reason
+    if concept_id in RETENTION_DISCOURSE_SUBJECTS:
+        return "discourse_subject"
+    relations = [rel for rel in concept.get("relations") or [] if isinstance(rel, dict)]
+    if not relations:
+        return "no_usable_relations"
+    source_refs = [str(ref) for ref in concept.get("source_refs") or [] if str(ref)]
+    relation_count = len(relations)
+    source_count = len(source_refs)
+    if relation_count >= 3 and source_count >= 2:
+        return None
+    if relation_count >= 2 and source_count >= 1 and len(concept_id) >= 8:
+        if "_" in concept_id:
+            return None
+        if any(part in _DOMAIN_TERM_PARTS for part in _concept_tokens(concept_id)):
+            return None
+    if relation_count >= 3:
+        return None
+    if relation_count >= 2 and len(concept_id) >= 12:
+        return None
+    return "insufficient_support"
+
+
+def retain_concepts(concepts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    rejections: Counter[str] = Counter()
+    for concept in concepts:
+        reason = reject_concept_retention(concept)
+        if reason:
+            rejections[reason] += 1
+            continue
+        kept.append(concept)
+    return kept, {
+        "concepts_before_retention": len(concepts),
+        "concepts_after_retention": len(kept),
+        "retention_rejections": dict(rejections),
+    }

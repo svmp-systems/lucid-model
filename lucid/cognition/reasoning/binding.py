@@ -15,7 +15,17 @@ from lucid.cognition.reasoning.cue_routes import (
 )
 from lucid.runtime.paths import resolve_checkpoint
 from lucid.training.checkpoint.slots import resolve_checkpoint_ref
-from lucid.training.source_context import MECHANISM_VERB_SURFACES, VENDOR_CUE_TO_SOURCE
+from lucid.training.source_context import (
+    MECHANISM_VERB_SURFACES,
+    VENDOR_CUE_TO_SOURCE,
+    is_mechanism_like_target,
+    is_renderable_definition_target,
+    parse_concept_query_with_context,
+    preferred_definition_concept,
+    resolve_concept_topic,
+    score_definition_target_for_concept,
+    FOLLOWUP_TOPIC_PRONOUNS,
+)
 from lucid.ir.binding import (
     BindingInput,
     BindingOutput,
@@ -46,6 +56,33 @@ _REGION_FRAME_HINTS: dict[str, str] = {
 
 _DEPOSIT_SURFACES = frozenset({"placed", "deposited", "put", "stored", "left"})
 _LOCATION_SURFACES = frozenset({"bank", "vault", "safe", "river", "market"})
+_QUERY_SURFACE_STOP = frozenset(
+    {
+        "what",
+        "how",
+        "is",
+        "are",
+        "was",
+        "were",
+        "a",
+        "an",
+        "the",
+        "does",
+        "do",
+        "tell",
+        "me",
+        "about",
+        "explain",
+        "describe",
+        "can",
+        "you",
+        "give",
+        "i",
+        "want",
+        "to",
+        "know",
+    }
+)
 _CONTEXTUAL_SINGLETONS = frozenset(
     {
         "algorithm",
@@ -123,6 +160,16 @@ class BindingOperator:
             concepts=self._concepts,
             active_traces=dmf.active_traces,
         )
+        concept_seeds = _concept_definition_seeds(
+            graph=graph,
+            unit_by_id=unit_by_id,
+            active_traces=dmf.active_traces,
+        )
+        session_mechanism_seeds = _session_concept_mechanism_seeds(
+            graph=graph,
+            unit_by_id=unit_by_id,
+            active_traces=dmf.active_traces,
+        )
         compound_seeds, compound_covered_units = _compound_activation_seeds(
             cue=cue,
             cue_to_trace=cue_to_trace,
@@ -137,7 +184,7 @@ class BindingOperator:
             competing_units=competing_units,
             covered_units=compound_covered_units,
         )
-        local_seeds = [*mechanism_seeds, *compound_seeds, *local_seeds]
+        local_seeds = [*mechanism_seeds, *concept_seeds, *session_mechanism_seeds, *compound_seeds, *local_seeds]
         seeds.extend(local_seeds)
         if inp.prior_candidate_frames and self.config.widen_on_recheck:
             seeds.extend(_seeds_from_prior_frames(inp.prior_candidate_frames))
@@ -439,8 +486,38 @@ def _local_graphs_for_seed(
 
     text = " ".join(unit.surface for unit in units)
     matched_concepts = _matched_concepts(text, concepts)
+    if seed.source in {"concept_definition_query", "session_concept_mechanism_query"}:
+        tagged_ids = [
+            tag.split(":", 1)[1]
+            for tag in seed.structural_tags
+            if str(tag).startswith("concept:") and ":" in str(tag)
+        ]
+        if tagged_ids:
+            primary_id = preferred_definition_concept(tagged_ids[0])
+            if seed.source == "session_concept_mechanism_query":
+                primary_id = preferred_definition_concept(tagged_ids[0])
+            lookup_ids = [primary_id]
+            if primary_id != tagged_ids[0]:
+                lookup_ids.append(tagged_ids[0])
+            direct = [
+                concept
+                for concept in concepts
+                if str(concept.get("concept_id") or concept.get("id") or "").strip() in lookup_ids
+            ]
+            if direct:
+                direct.sort(
+                    key=lambda concept: (
+                        0
+                        if str(concept.get("concept_id") or concept.get("id") or "").strip() == primary_id
+                        else 1
+                    )
+                )
+                matched_concepts = [direct[0]]
     if matched_concepts:
         graph.family = "concept"
+        render_concept = str(
+            matched_concepts[0].get("concept_id") or matched_concepts[0].get("id") or ""
+        ).strip()
         for concept in matched_concepts:
             concept_id = str(concept.get("concept_id") or concept.get("id") or "").strip()
             if not concept_id:
@@ -470,6 +547,28 @@ def _local_graphs_for_seed(
                     continue
                 if not rel_name or not target:
                     continue
+                rel_key = normalize_cue_key(rel_name)
+                if seed.source == "concept_definition_query" and rel_key in {"type_of", "is_a", "kind_of"}:
+                    if not is_renderable_definition_target(
+                        target,
+                        relation=rel_key,
+                        concept_id=render_concept or str(concept.get("concept_id") or ""),
+                    ):
+                        continue
+                    if score_definition_target_for_concept(
+                        target,
+                        render_concept or str(concept.get("concept_id") or ""),
+                    ) < 0.35:
+                        continue
+                elif seed.source == "session_concept_mechanism_query":
+                    if rel_key in {"uses", "enables", "capability", "measurement"}:
+                        if len(target.split()) < 4:
+                            continue
+                    elif rel_key in {"property", "has_property"}:
+                        if not is_mechanism_like_target(target):
+                            continue
+                    else:
+                        continue
                 target_node = add_node(target, "value", conf=rel_conf)
                 graph.edges.append(
                     GraphEdge(
@@ -1046,6 +1145,86 @@ def _local_reading_seeds(
     return seeds
 
 
+def _topic_unit_for_concept_query(
+    units: list[CandidateUnit],
+    *,
+    topic_surface: str,
+    concept_id: str,
+) -> str:
+    topic_key = normalize_cue_key(topic_surface)
+    preferred_id = preferred_definition_concept(concept_id)
+    lookup_keys = [topic_key, normalize_cue_key(concept_id), normalize_cue_key(preferred_id)]
+    lookup_keys = [key for key in lookup_keys if key]
+
+    for unit in units:
+        surface_key = normalize_cue_key(unit.surface)
+        if not surface_key or surface_key in _QUERY_SURFACE_STOP:
+            continue
+        if surface_key in lookup_keys:
+            return unit.unit_id
+        resolved = resolve_concept_topic(surface_key)
+        if resolved and normalize_cue_key(resolved) in lookup_keys:
+            return unit.unit_id
+
+    for unit in reversed(units):
+        surface_key = normalize_cue_key(unit.surface)
+        if surface_key and surface_key not in _QUERY_SURFACE_STOP:
+            return unit.unit_id
+    return units[-1].unit_id if units else ""
+
+
+def _concept_definition_seeds(
+    *,
+    graph: PerceptualEvidenceGraph,
+    unit_by_id: dict[str, CandidateUnit],
+    active_traces: list[ActiveTrace],
+) -> list[FrameSeed]:
+    raw = graph.provenance.extra.get("raw_text") if graph.provenance.extra else None
+    session_context = graph.provenance.extra.get("session_context") if graph.provenance.extra else None
+    if not isinstance(raw, str):
+        return []
+    parsed = parse_concept_query_with_context(
+        raw.strip(),
+        session_context if isinstance(session_context, dict) else None,
+    )
+    if not parsed:
+        return []
+
+    topic_surface, concept_id, frame_type = parsed
+    topic_unit_id = _topic_unit_for_concept_query(
+        graph.candidate_units,
+        topic_surface=topic_surface,
+        concept_id=concept_id,
+    )
+
+    active_ids = {trace.trace_id for trace in active_traces if trace.trace_id}
+    trace_id = f"t_term_{concept_id}"
+    if trace_id not in active_ids:
+        trace_id = next(
+            (trace.trace_id for trace in active_traces if trace.cluster_id == concept_id and trace.trace_id),
+            trace_id,
+        )
+
+    member_units = _dedupe_strings([topic_unit_id] if topic_unit_id else [])
+    if not member_units:
+        return []
+
+    trace_slug = normalize_cue_key(trace_id) or _slug_frame_id(trace_id)
+    return [
+        FrameSeed(
+            seed_id=f"concept_query_{concept_id}__{trace_slug}",
+            frame_type=frame_type,
+            unit_ids=set(member_units),
+            structural_tags=[
+                f"concept:{concept_id}",
+                f"forced_trace:{trace_id}",
+            ],
+            source="concept_definition_query",
+            forced_trace_assignments={unit_id: trace_id for unit_id in member_units},
+        )
+    ]
+
+
 def _mechanism_source_seeds(
     *,
     graph: PerceptualEvidenceGraph,
@@ -1090,6 +1269,74 @@ def _mechanism_source_seeds(
                 f"forced_trace:{trace_id}",
             ],
             source="mechanism_source_query",
+            forced_trace_assignments={unit_id: trace_id for unit_id in member_units},
+        )
+    ]
+
+
+def _session_concept_mechanism_seeds(
+    *,
+    graph: PerceptualEvidenceGraph,
+    unit_by_id: dict[str, CandidateUnit],
+    active_traces: list[ActiveTrace],
+) -> list[FrameSeed]:
+    extra = graph.provenance.extra if graph.provenance.extra else {}
+    raw = extra.get("raw_text")
+    session_context = extra.get("session_context")
+    if not isinstance(raw, str):
+        return []
+    parsed = parse_concept_query_with_context(
+        raw.strip(),
+        session_context if isinstance(session_context, dict) else None,
+    )
+    if not parsed or parsed[2] != "mechanism_query":
+        return []
+
+    surfaces = {normalize_cue_key(unit.surface) for unit in graph.candidate_units if unit.surface}
+    if not (surfaces & MECHANISM_VERB_SURFACES or "how" in surfaces):
+        return []
+
+    _, concept_id, _ = parsed
+    preferred_id = preferred_definition_concept(concept_id)
+    topic_unit_id = _topic_unit_for_concept_query(
+        graph.candidate_units,
+        topic_surface=preferred_id.replace("_", " "),
+        concept_id=preferred_id,
+    )
+    member_units = _dedupe_strings([topic_unit_id] if topic_unit_id else [])
+    if not member_units:
+        surfaces: dict[str, str] = {}
+        for unit in graph.candidate_units:
+            key = normalize_cue_key(unit.surface)
+            if key and key not in _QUERY_SURFACE_STOP and key not in FOLLOWUP_TOPIC_PRONOUNS:
+                surfaces[key] = unit.unit_id
+        member_units = _dedupe_strings(list(surfaces.values())[:3])
+    if not member_units:
+        return []
+
+    active_ids = {trace.trace_id for trace in active_traces if trace.trace_id}
+    trace_id = f"t_term_{preferred_id}"
+    if trace_id not in active_ids:
+        trace_id = next(
+            (
+                trace.trace_id
+                for trace in active_traces
+                if trace.cluster_id in {preferred_id, concept_id} and trace.trace_id
+            ),
+            f"t_term_{concept_id}",
+        )
+
+    trace_slug = normalize_cue_key(trace_id) or _slug_frame_id(trace_id)
+    return [
+        FrameSeed(
+            seed_id=f"concept_mechanism_{preferred_id}__{trace_slug}",
+            frame_type="mechanism_query",
+            unit_ids=set(member_units),
+            structural_tags=[
+                f"concept:{preferred_id}",
+                f"forced_trace:{trace_id}",
+            ],
+            source="session_concept_mechanism_query",
             forced_trace_assignments={unit_id: trace_id for unit_id in member_units},
         )
     ]
@@ -1657,6 +1904,10 @@ def _slug_frame_id(value: str) -> str:
 
 def _frame_type_from_role_hint(role_hint: str) -> str:
     hint = normalize_cue_key(role_hint)
+    if hint in {"definition_query", "concept_query"}:
+        return "definition_query"
+    if hint == "mechanism_query":
+        return "mechanism_query"
     if "transform" in hint or "shift" in hint:
         return "transform"
     if "legend" in hint or "symbol" in hint:

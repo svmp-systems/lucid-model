@@ -53,6 +53,7 @@ class SessionMemory:
     session_id: str
     memories: list[dict[str, Any]] = field(default_factory=list)
     events: list[MemoryEvent] = field(default_factory=list)
+    pipeline_carryover: dict[str, Any] = field(default_factory=dict)
 
 
 def _validate_session_id(session_id: str) -> str:
@@ -166,6 +167,7 @@ def load_session_memory(audit_dir: str | Path, session_id: str) -> SessionMemory
         session_id=str(data.get("session_id") or session_id),
         memories=[dict(item) for item in data.get("memories", []) if isinstance(item, dict)],
         events=events,
+        pipeline_carryover=dict(data.get("pipeline_carryover") or {}),
     )
 
 
@@ -212,7 +214,10 @@ def build_session_context(
         "recent_turns": recent,
         "active_memories": list(memory.memories),
         "active_bindings": _active_bindings(memory),
-        "unresolved_items": [],
+        "unresolved_items": list(memory.pipeline_carryover.get("unresolved_items") or []),
+        "pipeline_carryover": dict(memory.pipeline_carryover),
+        "concept_topics": list(memory.pipeline_carryover.get("concept_topics") or []),
+        "carryover_trace_ids": list(memory.pipeline_carryover.get("carryover_trace_ids") or []),
         "summaries": list(record.summaries),
         "history_policy": {
             "max_prior_turns": _MAX_CONTEXT_TURNS,
@@ -238,8 +243,14 @@ def to_session_state(record: ChatRecord, memory: SessionMemory) -> SessionState:
         ],
         active_memories=list(memory.memories),
         active_bindings=_active_bindings(memory),
-        unresolved_items=[],
+        unresolved_items=list(memory.pipeline_carryover.get("unresolved_items") or []),
         summaries=list(record.summaries),
+        carryover_trace_ids=list(memory.pipeline_carryover.get("carryover_trace_ids") or []),
+        carryover_frame_ids=[
+            str(item.get("context_frame_id"))
+            for item in memory.pipeline_carryover.get("prior_context_frames") or []
+            if isinstance(item, dict) and item.get("context_frame_id")
+        ],
     )
 
 

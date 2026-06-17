@@ -95,6 +95,7 @@ def test_nine_checks_populated() -> None:
     assert checks.projection_fit_check is not None
     assert checks.contradiction_check is not None
     assert checks.maturity_check is not None
+    assert checks.renderability_check is not None
     assert checks.risk_check is not None
     assert checks.margin_check.passed is False
     assert confidence.margin == 0.04
@@ -131,12 +132,12 @@ def test_source_backed_mature_basin_can_commit_with_local_binding_noise() -> Non
                     quantized_payload={
                         "canonical_label": "qubit",
                         "relations": [
-                            {
-                                "relation": "type_of",
-                                "target": "unit of quantum information",
-                                "confidence": 0.82,
-                                "source_refs": ["ibm_quantum_computing"],
-                            }
+                                {
+                                    "relation": "type_of",
+                                    "target": "a basic unit of quantum information used in quantum computing",
+                                    "confidence": 0.82,
+                                    "source_refs": ["ibm_quantum_computing"],
+                                }
                         ],
                     },
                 )
@@ -185,7 +186,7 @@ def test_source_backed_mature_basin_can_commit_with_local_binding_noise() -> Non
 
     checks, _ = run_checks(inp, LucidityConfig())
     assert checks.coherence_check is not None
-    assert checks.coherence_check.passed is False
+    assert checks.coherence_check.passed is True
     assert checks.contradiction_check is not None
     assert checks.contradiction_check.passed is True
     assert checks.contradiction_check.details["ignored_basin_conflict_count"] == 2
@@ -212,12 +213,12 @@ def test_source_backed_top_scope_ignores_peripheral_duplicate_basin_conflicts() 
                     quantized_payload={
                         "canonical_label": "quantum computing",
                         "relations": [
-                            {
-                                "relation": "type_of",
-                                "target": "multidisciplinary field using quantum mechanics",
-                                "confidence": 0.86,
-                                "source_refs": ["aws_quantum_computing"],
-                            }
+                                {
+                                    "relation": "type_of",
+                                    "target": "a multidisciplinary field of science that uses quantum mechanics",
+                                    "confidence": 0.86,
+                                    "source_refs": ["aws_quantum_computing"],
+                                }
                         ],
                     },
                 ),
@@ -460,7 +461,7 @@ def test_definition_basin_render_units_pick_one_source() -> None:
             "relations": [
                 {
                     "relation": "type_of",
-                    "target": "multidisciplinary field using quantum mechanics",
+                    "target": "a multidisciplinary field of science that uses quantum mechanics",
                     "confidence": 0.9,
                     "source_refs": ["aws_quantum_computing"],
                 },
@@ -509,7 +510,7 @@ def test_definition_basin_render_units_pick_one_source() -> None:
             "relations": [
                 {
                     "relation": "type_of",
-                    "target": "multidisciplinary field using quantum mechanics",
+                    "target": "a multidisciplinary field of science that uses quantum mechanics",
                     "confidence": 0.9,
                     "source_refs": ["aws_quantum_computing"],
                 },

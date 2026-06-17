@@ -23,6 +23,7 @@ from lucid.audit.chat import (
     to_session_state,
     update_session_memory_from_turn,
 )
+from lucid.cognition.session_continuity import extract_pipeline_carryover
 from lucid.audit.logger import content_hash
 from lucid.cognition.input.perception import PerceptionConfig
 from lucid.cognition.memory.dmf import DynamicMemoryField, trace_record_from_store
@@ -197,6 +198,7 @@ def run_chat_turn(
         response_source=response_source,
     )
     events = update_session_memory_from_turn(memory, turn, lucidity_decision=lucidity_decision)
+    memory.pipeline_carryover = extract_pipeline_carryover(run)
     turn.memory_events = [to_dict(event) for event in events]
     save_session_memory(audit_dir, memory)
 

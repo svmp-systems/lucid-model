@@ -203,9 +203,19 @@ def train_general_language(
     checkpoint_arg = str(checkpoint)
     module_runs: dict[str, Any] = {}
     if run_module_train:
-        train_modules = ("lucidity", "decoder", "dmf", "cue_encoder", "binding")
-        steps = str(min(len(episodes), 80))
-        for module in train_modules:
+        module_episodes = {
+            "lucidity": pack_dir / "all.jsonl",
+            "decoder": pack_dir / "all.jsonl",
+            "dmf": pack_dir / "all.jsonl",
+            "cue_encoder": pack_dir / "all.jsonl",
+            "binding": pack_dir / "chat_qa_paraphrase.jsonl",
+        }
+        module_steps = {
+            "binding": min(paraphrase_count, 80),
+        }
+        for module in ("lucidity", "decoder", "dmf", "cue_encoder", "binding"):
+            episodes_path = module_episodes[module]
+            steps = str(module_steps.get(module, min(len(episodes), 80)))
             cmd = [
                 sys.executable,
                 "-m",
@@ -214,9 +224,10 @@ def train_general_language(
                 "--checkpoint",
                 checkpoint_arg,
                 "--episodes",
-                str(pack_dir / "all.jsonl"),
+                str(episodes_path),
                 "--steps",
                 steps,
+                "--allow-generator-gold",
                 "--no-save",
             ]
             completed = subprocess.run(cmd, capture_output=True, text=True, check=False)

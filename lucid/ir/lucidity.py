@@ -42,6 +42,7 @@ class LucidityCheckResults:
     projection_fit_check: CheckResult | None = None
     contradiction_check: CheckResult | None = None
     maturity_check: CheckResult | None = None
+    renderability_check: CheckResult | None = None
     risk_check: CheckResult | None = None
 
 

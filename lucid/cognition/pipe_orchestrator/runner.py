@@ -36,6 +36,10 @@ from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, Projec
 from lucid.ir.serde import to_dict
 from lucid.ir.training import Episode
 from lucid.cognition.input.perception import PerceptionConfig
+from lucid.cognition.session_continuity import (
+    context_frames_from_carryover,
+    pipeline_carryover_from_session_context,
+)
 
 from .stages import FunctionStage, Stage
 from .stub_stages import build_default_stage_fns
@@ -332,12 +336,19 @@ class OrchestratorRunner:
             )
             prior_binding_frames = list(run.binding_output.candidate_frames)
 
+            prior_context_frames = context_frames_from_carryover(
+                pipeline_carryover_from_session_context(
+                    session_context if isinstance(session_context, dict) else None
+                )
+            )
+
             run.context_op_input = ContextOpInput(
                 binding_candidate_frames=run.binding_output.candidate_frames,
                 dmf_output=run.dmf_output,
                 perceptual_evidence_graph=run.evidence_graph,
                 cue_cloud=run.cue_cloud,
                 lucidity_feedback=lucidity_feedback,
+                prior_context_frames=prior_context_frames,
             )
             run.context_op_output = self._run_stage(
                 StageName.CONTEXT_OP.value,

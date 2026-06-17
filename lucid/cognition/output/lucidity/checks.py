@@ -8,6 +8,17 @@ from lucid.cognition.output.lucidity.config import (
     normalize_risk_level,
     normalize_task_intent,
 )
+from lucid.cognition.output.lucidity.evidence_quality import (
+    basin_has_renderable_relations,
+    binding_graph_render_units,
+    binding_graph_render_units,
+    concept_target_basin,
+    is_knowledge_query,
+    knowledge_query_competition_margin,
+    knowledge_query_from_input,
+    renderability_score,
+    source_backed_renderable_basin,
+)
 from lucid.ir.basins import BasinOutput, CandidateBasinState
 from lucid.ir.binding import BindingOutput, CandidateFrame
 from lucid.ir.context_op import ContextOpOutput
@@ -291,20 +302,32 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
     task = normalize_task_intent(inp.task_intent)
     pass_kind = normalize_pass_kind(inp.pass_kind)
     risk_level = normalize_risk_level(inp.risk_level)
+    knowledge_query = is_knowledge_query(inp)
+    source_backed = source_backed_renderable_basin(inp)
 
     summary = inp.basin_output.competition_summary
     margin_score = summary.top_margin
-    margin_threshold = config.margin_threshold(inp.task_intent, pass_kind)
+    margin_details = {
+        "top_basin_id": summary.top_basin_id,
+        "second_basin_id": summary.second_basin_id,
+        "task_intent": task,
+        "pass_kind": pass_kind,
+        "knowledge_query": knowledge_query,
+    }
+    scoped_margin = knowledge_query_competition_margin(inp) if knowledge_query else None
+    if scoped_margin is not None:
+        margin_score, scoped_details = scoped_margin
+        margin_details.update(scoped_details)
+    margin_threshold = config.margin_threshold(
+        inp.task_intent,
+        pass_kind,
+        knowledge_query=knowledge_query,
+    )
     margin = _check(
         passed=margin_score >= margin_threshold,
         score=margin_score,
         threshold=margin_threshold,
-        details={
-            "top_basin_id": summary.top_basin_id,
-            "second_basin_id": summary.second_basin_id,
-            "task_intent": task,
-            "pass_kind": pass_kind,
-        },
+        details=margin_details,
     )
 
     coverage_score, coverage_details = _coverage_score(
@@ -324,24 +347,47 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
         inp.binding_output,
         inp.basin_output.candidate_basin_states,
     )
+    coherence_threshold = (
+        config.coherence_threshold_source_backed if source_backed else config.coherence_threshold
+    )
+    if knowledge_query and binding_graph_render_units(inp):
+        coherence_threshold = min(coherence_threshold, 0.4)
+    if source_backed:
+        top = next(
+            (
+                state
+                for state in inp.basin_output.candidate_basin_states
+                if state.basin_id == summary.top_basin_id
+            ),
+            None,
+        )
+        if top is not None and top.coherence_score >= coherence_threshold:
+            coherence_score = max(coherence_score, top.coherence_score)
+            coherence_details = {**coherence_details, "source_backed_basin_coherence": top.coherence_score}
     coherence = _check(
-        passed=coherence_score >= config.coherence_threshold,
+        passed=coherence_score >= coherence_threshold,
         score=coherence_score,
-        threshold=config.coherence_threshold,
-        details=coherence_details,
+        threshold=coherence_threshold,
+        details={**coherence_details, "source_backed_relaxed": source_backed},
     )
 
     binding_score = inp.binding_output.binding_stability_score
     if binding_score <= 0 and inp.basin_output.binding_stability_hint > 0:
         binding_score = inp.basin_output.binding_stability_hint
+    binding_threshold = (
+        config.binding_stability_threshold_source_backed
+        if source_backed
+        else config.binding_stability_threshold
+    )
     binding = _check(
-        passed=binding_score >= config.binding_stability_threshold,
+        passed=binding_score >= binding_threshold,
         score=binding_score,
-        threshold=config.binding_stability_threshold,
+        threshold=binding_threshold,
         details={
             "unresolved_frames": sum(
                 1 for frame in inp.binding_output.candidate_frames if frame.unresolved_slot_names
             ),
+            "source_backed_relaxed": source_backed,
         },
     )
 
@@ -413,10 +459,34 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
     maturity_pool = relevant or active
     if not maturity_pool:
         maturity_score = 0.5
+        quarantine_only = False
     else:
         hot = sum(1 for trace in maturity_pool if trace.heat_tier in {"hot", "warm", "stabilized"})
-        maturity_score = hot / len(maturity_pool)
-    maturity_pass = maturity_score >= config.maturity_hot_fraction or risk_level == "low"
+        quarantine_only = all(trace.heat_tier == "quarantine" for trace in maturity_pool)
+        maturity_score = 0.0 if quarantine_only else hot / len(maturity_pool)
+    if knowledge_query:
+        maturity_pass = maturity_score >= config.maturity_hot_fraction and not quarantine_only
+        if quarantine_only:
+            target = concept_target_basin(inp)
+            render_concept = ""
+            parsed_kq = knowledge_query_from_input(inp)
+            if parsed_kq:
+                from lucid.training.source_context import preferred_definition_concept
+
+                _, concept_id, frame_type = parsed_kq
+                render_concept = (
+                    preferred_definition_concept(concept_id)
+                    if frame_type == "definition_query"
+                    else concept_id
+                )
+            if binding_graph_render_units(inp) or (
+                target is not None and basin_has_renderable_relations(target, concept_id=render_concept)
+            ):
+                maturity_pass = True
+                maturity_score = max(maturity_score, config.maturity_hot_fraction)
+                quarantine_only = False
+    else:
+        maturity_pass = maturity_score >= config.maturity_hot_fraction or risk_level == "low"
     if risk_level == "high" and maturity_score < config.maturity_hot_fraction and pass_kind != "final_check":
         maturity_pass = False
     maturity = _check(
@@ -428,7 +498,18 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
             "relevant_trace_count": len(maturity_pool),
             "relevant_trace_ids": sorted(trace.trace_id for trace in maturity_pool if trace.trace_id),
             "risk_level": risk_level,
+            "knowledge_query": knowledge_query,
+            "quarantine_only": quarantine_only,
         },
+    )
+
+    render_score, render_details = renderability_score(inp)
+    renderability = _check(
+        passed=render_score >= config.renderability_threshold
+        or render_details.get("status") == "not_applicable",
+        score=render_score,
+        threshold=config.renderability_threshold,
+        details=render_details,
     )
 
     needs_projection = task == "solve_grid" or risk_level == "high"
@@ -463,6 +544,7 @@ def run_checks(inp: LucidityInput, config: LucidityConfig) -> tuple[LucidityChec
         projection_fit_check=projection,
         contradiction_check=contradiction,
         maturity_check=maturity,
+        renderability_check=renderability,
         risk_check=risk,
     )
 

@@ -30,6 +30,7 @@ from lucid.ir.perception import (
 )
 from lucid.runtime.paths import resolve_checkpoint
 from lucid.training.checkpoint.slots import resolve_checkpoint_ref
+from lucid.training.source_context import extract_session_concept_topics, parse_concept_query_with_context, resolve_concept_topic
 
 _TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 _STOP_CUE_KEYS = frozenset(
@@ -257,6 +258,7 @@ def _surface_features(
     surface = normalize_cue_key(unit.surface)
     if not surface:
         return []
+    resolved = resolve_concept_topic(surface) or surface
     weight = _base_weight(unit.confidence, unit.salience)
     refs = (unit.unit_id,)
     if surface in _STOP_CUE_KEYS:
@@ -287,17 +289,27 @@ def _surface_features(
     features = [
         EvidenceFeature(
             feature_key=f"surface:{surface}",
-            cue_key=surface,
+            cue_key=resolved,
             weight=weight,
             evidence_refs=refs,
-            keep_alive=force_keep_alive,
+            keep_alive=force_keep_alive or resolved != surface,
         )
     ]
+    if resolved != surface:
+        features.append(
+            EvidenceFeature(
+                feature_key=f"alias:{surface}->{resolved}",
+                cue_key=resolved,
+                weight=max(weight, 0.72),
+                evidence_refs=refs,
+                keep_alive=True,
+            )
+        )
     if unit.kind_hint:
         features.append(
             EvidenceFeature(
                 feature_key=f"kind:{normalize_cue_key(unit.kind_hint)}",
-                cue_key=surface,
+                cue_key=resolved,
                 weight=max(0.15, weight * 0.7),
                 evidence_refs=refs,
                 keep_alive=False,
@@ -309,7 +321,7 @@ def _surface_features(
             features.append(
                 EvidenceFeature(
                     feature_key=f"type:{normalized}",
-                    cue_key=surface,
+                    cue_key=resolved,
                     weight=max(0.15, weight * 0.7),
                     evidence_refs=refs,
                     keep_alive=False,
@@ -783,6 +795,17 @@ def encode_cues(
     primitive: dict[str, dict[str, Any]] = {}
     relation: dict[str, dict[str, Any]] = {}
     features = evidence_features(graph)
+    raw_text = graph.provenance.extra.get("raw_text")
+    session_context = graph.provenance.extra.get("session_context")
+    if isinstance(raw_text, str):
+        parsed = parse_concept_query_with_context(
+            raw_text.strip(),
+            session_context if isinstance(session_context, dict) else None,
+        )
+        if parsed:
+            _, concept_id, _ = parsed
+            _merge_primitive(primitive, concept_id, 0.85, ("utterance",), True)
+            _merge_primitive(primitive, "concept_query_like", 0.75, ("utterance",), False)
 
     for feature in features:
         if feature.kind == "relation":
@@ -889,6 +912,8 @@ def _session_context_priors(
         return {}
 
     priors: dict[str, float] = {}
+    for concept_id in extract_session_concept_topics(session_context):
+        priors[concept_id] = max(priors.get(concept_id, 0.0), 0.42)
     context_keys = _context_topic_keys(recent_text)
     for topic_key in context_keys:
         suffix = _singular_cue_key(topic_key.rsplit("_", 1)[-1])

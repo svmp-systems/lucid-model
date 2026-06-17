@@ -53,7 +53,7 @@ class DmfTrainer(ModuleTrainer):
                     "success_count": 0,
                     "failure_count": 0,
                     "maturity_state": "provisional",
-                    "heat_tier": "hot",
+                    "heat_tier": "quarantine",
                 }
                 store["records"].append(record)
             weight = float(target["weight"])

@@ -1725,8 +1725,13 @@ def train_scale_ingest(
 ) -> dict[str, Any]:
     cfg = config or IngestConfig.scale_default()
     root = resolve_checkpoint(checkpoint)
-    state = empty_checkpoint(root.name or "v.0.2")
-    state.checkpoint_id = root.name or "v.0.2"
+    if root.exists():
+        state = load_checkpoint(root)
+        state.checkpoint_id = root.name or state.checkpoint_id or "v.0.2"
+        ingest_log(f"merging into existing checkpoint {root.name}", cfg)
+    else:
+        state = empty_checkpoint(root.name or "v.0.2")
+        state.checkpoint_id = root.name or "v.0.2"
 
     source_rows = resolve_ingest_sources(sources=sources, sources_path=sources_path)
     ingest_log(f"starting checkpoint {root.name} from {len(source_rows)} source(s)", cfg)

@@ -83,6 +83,10 @@ def classify_social_utterance(text: str) -> tuple[str, str] | None:
     normalized = normalize_utterance(text)
     if not normalized or _DOMAIN_HINT.search(normalized):
         return None
+    from lucid.training.source_context import parse_concept_query
+
+    if parse_concept_query(normalized):
+        return None
     word_count = len(normalized.split())
     for pattern, kind, response in _SOCIAL_PATTERNS:
         if not pattern.search(normalized):

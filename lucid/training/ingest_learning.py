@@ -18,6 +18,7 @@ from lucid.training.source_context import (
     VENDOR_REDIRECT_TARGETS,
     source_entity_for_article,
 )
+from lucid.training.ingest_quality import reject_relation
 
 FACET_BY_RELATION = {
     "type_of": "definition",
@@ -612,6 +613,8 @@ def consolidate_vendor_artifact_concepts(concepts: list[dict[str, Any]]) -> list
         del by_id[concept_id]
 
     for target_id, relation in redirects:
+        if reject_relation(relation):
+            continue
         concept = by_id[target_id]
         relations = list(concept.get("relations") or [])
         relations.append(relation)
