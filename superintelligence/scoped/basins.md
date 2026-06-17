@@ -94,18 +94,40 @@ But basins still do not final-commit. Lucidity does that.
 
 ---
 
+## Current implementation
+
+The runtime implementation lives in `lucid/cognition/reasoning/basins.py` and is backed by checkpoint records loaded through `lucid/memory/basin_bank.py`.
+
+At runtime basins are:
+
+1. loaded from `basin_bank.json` in the selected checkpoint;
+2. indexed by stable basin ID and normalized family hint;
+3. shortlisted per context frame from frame affinity, context-op basin pressure, or activation-signature matches;
+4. scored with local frame confidence, pressure, trace coherence, activation match, trust, heat tier, interference deltas, continuity bias, and suppression penalties;
+5. ranked with `compute_policy.max_active_basins` while preserving scope coverage before filling the remaining budget;
+6. assembled only from active basins in the same scope;
+7. emitted with audit notes that summarize bank size, active states, assemblies, evidence handles, source refs, suppression links, conflicts, and snapshot ID.
+
+The direct manual smoke command is:
+
+```bash
+python -m lucid.cli basins --audit-dir audit/basins
+```
+
+That command runs the built-in bank ambiguity fixture, prints `BasinOutput` JSON, and writes a normal Lucid audit run under `audit/basins/runs/<run_id>/`.
+
+---
+
 ## Input contract
 
 ```
 BasinInput {
-    active_traces
-    candidate_frames
-    context_frames
     interference_output          // energy deltas, cooperation/competition maps
-    local_basin_pressure         // scoped priors from context-op
-    basin_field_snapshot_id      // versioned basin memory
-    heat_policy                  // hot/warm/cold basin tiers
-    prior_basin_state            // optional carryover
+    candidate_frames             // binding candidate frames
+    context_frames               // context-op scopes
+    local_basin_pressures        // scoped priors from context-op
+    basin_field_snapshot_id      // optional versioned basin-memory snapshot
+    prior_basin_state            // optional carryover for continuity bias
     compute_policy
 }
 ```
@@ -127,7 +149,14 @@ BasinOutput {
             scope_frames             // which context frames contributed
             margin_vs_next
             coherence_score
+            activation_signature
+            semantic_signature
+            evidence_handles
+            relation_handles
+            source_refs
+            trust_score
             heat_tier
+            quantized_payload
         }
     ]
     basin_assemblies: [
@@ -137,6 +166,10 @@ BasinOutput {
             combined_energy
             assembly_coherence
             scope_frames
+            evidence_handles
+            relation_handles
+            source_refs
+            quantized_payload
         }
     ]
     competition_summary: {
@@ -147,7 +180,7 @@ BasinOutput {
     }
     unresolved_conflicts         // passed to lucidity
     binding_stability_hint
-    audit_log
+    audit_notes
 }
 ```
 

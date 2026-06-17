@@ -5,17 +5,22 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 from json import JSONDecodeError
 from pathlib import Path
+from uuid import uuid4
 
+from lucid.audit.logger import AuditLogger
 from lucid.audit.cue import write_cue_encoder_audit
 from lucid.cognition.input.cue import CueEncoderConfig, encode_cues
 from lucid.cognition.input.perception import PerceptionConfig, perceive, to_compact_json
 from lucid.cognition.orchestrator.runner import OrchestratorConfig, OrchestratorRunner
 from lucid.cognition.projector import run_projector
+from lucid.cognition.reasoning.basins import BasinsConfig, run_basins
 from lucid.cognition.reasoning.binding import BindingConfig, run_binding
 from lucid.cognition.reasoning.context_op import run_context_op
 from lucid.audit.binding import write_binding_audit
+from lucid.ir.basins import BasinInput
 from lucid.ir.binding import BindingInput
 from lucid.memory.dmf import load_dynamic_memory_field
 from lucid.ir.binding import CandidateFrame
@@ -23,7 +28,9 @@ from lucid.ir.common import AmbiguityPolicy, ComputePolicy, Modality, MaturitySt
 from lucid.ir.cue import CueCloud, CueEncoderInput, TraceActivationRequest
 from lucid.ir.context_op import ContextOpInput
 from lucid.ir.dmf import ActiveTrace, ConflictSignal, DmfInput, DmfOutput
+from lucid.ir.interference import InterferenceOutput
 from lucid.ir.lucidity import SearchDirectives
+from lucid.ir.pipeline import PipelineRun, RunContext
 from lucid.ir.perception import CandidateUnit, PerceptionInput, PerceptualEvidenceGraph, ReferenceHint
 from lucid.ir.projector import ProjectionConstraints, ProjectionGridPair, ProjectorInput
 from lucid.ir.serde import from_json, to_json
@@ -211,6 +218,83 @@ def _bank_context_fixture(feedback: list[str] | None = None) -> ContextOpInput:
 def _cmd_context_op(args: argparse.Namespace) -> int:
     out = run_context_op(_bank_context_fixture(feedback=args.feedback))
     print(to_json(out))
+    return 0
+
+
+def _write_basin_fixture_checkpoint(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    records = [
+        {
+            "basin_id": "b0001",
+            "family_hint": "financial_destination",
+            "frame_affinities": {"event_two": 0.82},
+            "activation_signature": {"financial_destination": 0.82, "t_bank": 0.4},
+            "semantic_signature": {"money": 0.7, "destination": 0.6},
+            "evidence_handles": ["concept:financial_destination"],
+            "source_refs": ["fixture:bank"],
+            "trust_score": 0.82,
+            "heat_tier": "quarantine",
+            "quantized_payload": {
+                "precision": "uint8_sparse",
+                "canonical_label": "financial_destination",
+                "source": "basins_cli_fixture",
+            },
+        },
+        {
+            "basin_id": "b0002",
+            "family_hint": "river_destination",
+            "frame_affinities": {"event_two": 0.78},
+            "activation_signature": {"river_destination": 0.78, "t_kayak": 0.4},
+            "semantic_signature": {"water": 0.7, "destination": 0.6},
+            "evidence_handles": ["concept:river_destination"],
+            "source_refs": ["fixture:bank"],
+            "trust_score": 0.78,
+            "heat_tier": "quarantine",
+            "quantized_payload": {
+                "precision": "uint8_sparse",
+                "canonical_label": "river_destination",
+                "source": "basins_cli_fixture",
+            },
+        },
+    ]
+    (path / "basin_bank.json").write_text(
+        json.dumps({"records": records, "next_id": 3}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _basins_fixture_input() -> BasinInput:
+    context_input = _bank_context_fixture()
+    context_output = run_context_op(context_input)
+    return BasinInput(
+        interference_output=InterferenceOutput(),
+        candidate_frames=context_input.binding_candidate_frames,
+        context_frames=context_output.context_frames,
+        local_basin_pressures=context_output.local_basin_pressures,
+    )
+
+
+def _cmd_basins(args: argparse.Namespace) -> int:
+    if args.fixture != "bank":
+        print(f"unknown basins fixture: {args.fixture}", file=sys.stderr)
+        return 2
+
+    with tempfile.TemporaryDirectory(prefix="lucid-basins-") as temp_dir:
+        checkpoint = Path(args.checkpoint) if args.checkpoint else Path(temp_dir)
+        if not args.checkpoint:
+            _write_basin_fixture_checkpoint(checkpoint)
+
+        basin_input = _basins_fixture_input()
+        basin_output = run_basins(
+            basin_input,
+            config=BasinsConfig(checkpoint=checkpoint),
+        )
+
+        ctx = RunContext(run_id=str(uuid4()), mode="smoke")
+        run = PipelineRun(context=ctx, basin_input=basin_input, basin_output=basin_output)
+        AuditLogger(base_dir=args.audit_dir).write_pipeline_run(run)
+
+    print(to_json(basin_output))
     return 0
 
 
@@ -580,6 +664,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lucidity feedback token, e.g. SEARCH_WIDER",
     )
     context_parser.set_defaults(func=_cmd_context_op)
+
+    basins_parser = sub.add_parser("basins", help="Run basins on a built-in fixture")
+    basins_parser.add_argument("--fixture", default="bank", choices=["bank"])
+    basins_parser.add_argument("--checkpoint", default="", help="Checkpoint with basin_bank.json")
+    basins_parser.add_argument("--audit-dir", default="audit/basins")
+    basins_parser.set_defaults(func=_cmd_basins)
 
     projector_parser = sub.add_parser("projector", help="Run projector on a built-in fixture")
     projector_parser.add_argument("--fixture", default="grid-move", choices=["grid-move"])
