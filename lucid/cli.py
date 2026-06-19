@@ -207,8 +207,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     )
 
     perception_cfg = PerceptionConfig.from_env()
-    if args.perception:
-        perception_cfg.backend = args.perception
+    perception_cfg.backend = args.perception or "rule"
 
     runner = OrchestratorRunner(
         config=OrchestratorConfig(

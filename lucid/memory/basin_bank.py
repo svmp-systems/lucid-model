@@ -1,4 +1,4 @@
-"""Basin bank runtime — load and index checkpoint basin records."""
+"""Runtime basin bank loading and lookup."""
 
 from __future__ import annotations
 
@@ -7,8 +7,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lucid.runtime.paths import resolve_checkpoint
-from lucid.training.checkpoint.store import STORE_FILES
+from lucid.training.checkpoints import STORE_FILES
 
 _TOKEN_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -61,10 +60,11 @@ def _string_list(raw: object) -> list[str]:
 
 
 def basin_bank_from_checkpoint(checkpoint: str | Path) -> list[BasinBankRecord]:
-    root = resolve_checkpoint(checkpoint)
+    root = Path(checkpoint)
     path = root / STORE_FILES["basin_bank"]
     if not path.exists():
         return []
+
     payload = json.loads(path.read_text(encoding="utf-8"))
     records: list[BasinBankRecord] = []
     for row in payload.get("records", []):
@@ -128,7 +128,7 @@ class BasinBank:
 def load_basin_bank(checkpoint: str | Path | None = None) -> BasinBank:
     if not checkpoint:
         return BasinBank()
-    root = resolve_checkpoint(checkpoint)
+    root = Path(checkpoint)
     if not root.exists():
         return BasinBank()
     return BasinBank(basin_bank_from_checkpoint(root))

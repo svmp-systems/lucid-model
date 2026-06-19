@@ -21,6 +21,14 @@ class CandidateBasinState:
     scope_frame_ids: list[str] = field(default_factory=list)
     margin_vs_next: float = 0.0
     coherence_score: float = 0.0
+    activation_signature: dict[str, float] = field(default_factory=dict)
+    semantic_signature: dict[str, float] = field(default_factory=dict)
+    evidence_handles: list[str] = field(default_factory=list)
+    relation_handles: list[str] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+    trust_score: float = 0.0
+    heat_tier: str = ""
+    quantized_payload: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -30,6 +38,10 @@ class BasinAssembly:
     combined_energy: float = 0.0
     assembly_coherence: float = 0.0
     scope_frame_ids: list[str] = field(default_factory=list)
+    evidence_handles: list[str] = field(default_factory=list)
+    relation_handles: list[str] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+    quantized_payload: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

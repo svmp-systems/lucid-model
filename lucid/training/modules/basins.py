@@ -46,12 +46,50 @@ class BasinsTrainer(ModuleTrainer):
                     "basin_id": next_id(store, "b"),
                     "family_hint": family,
                     "frame_affinities": {},
+                    "activation_signature": {family: float(target["confidence"])},
+                    "semantic_signature": {family: float(target["confidence"])},
+                    "evidence_handles": [],
+                    "relation_handles": [],
+                    "source_refs": [],
+                    "trust_score": float(target["confidence"]),
+                    "heat_tier": "quarantine",
                     "support_examples": [],
+                    "quantized_payload": {
+                        "precision": "uint8_sparse",
+                        "canonical_label": family,
+                        "source": "basin_trainer",
+                    },
                 }
                 store["records"].append(record)
             frame_id = target["frame_id"] or "unscoped"
             old = float(record["frame_affinities"].get(frame_id, 0.0))
             record["frame_affinities"][frame_id] = min(1.0, max(old, target["confidence"]))
+            signature = record.setdefault("activation_signature", {})
+            signature[family] = min(
+                1.0,
+                max(float(signature.get(family, 0.0)), target["confidence"]),
+            )
+            semantic = record.setdefault("semantic_signature", {})
+            semantic[family] = min(
+                1.0,
+                max(float(semantic.get(family, 0.0)), target["confidence"]),
+            )
+            record["trust_score"] = min(
+                1.0,
+                max(float(record.get("trust_score", 0.0)), float(target["confidence"])),
+            )
+            record.setdefault("heat_tier", "quarantine")
+            record.setdefault("evidence_handles", [])
+            record.setdefault("relation_handles", [])
+            record.setdefault("source_refs", [])
+            record.setdefault(
+                "quantized_payload",
+                {
+                    "precision": "uint8_sparse",
+                    "canonical_label": family,
+                    "source": "basin_trainer",
+                },
+            )
             if episode.episode_id not in record["support_examples"]:
                 record["support_examples"].append(episode.episode_id)
             updated.append(str(record["basin_id"]))
