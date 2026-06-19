@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from lucid.ir.binding import CandidateFrame
 from lucid.ir.common import AmbiguityPolicy, ComputePolicy
+from lucid.ir.cue import CueCloud
 from lucid.ir.dmf import DmfOutput
 from lucid.ir.perception import PerceptualEvidenceGraph
 
@@ -54,6 +55,7 @@ class ContextOpInput:
     binding_candidate_frames: list[CandidateFrame]
     dmf_output: DmfOutput
     perceptual_evidence_graph: PerceptualEvidenceGraph
+    cue_cloud: CueCloud | None = None
     prior_context_frames: list[ContextFrame] = field(default_factory=list)
     lucidity_feedback: list[str] = field(default_factory=list)
     compute_policy: ComputePolicy = field(default_factory=ComputePolicy)

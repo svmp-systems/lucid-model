@@ -709,12 +709,11 @@ def encode_cues(
 ) -> CueCloud:
     cfg = config or CueEncoderConfig()
     graph = inp.perceptual_evidence_graph
-    cue_map = _resolve_cue_map(cfg)
+    learned_map_available = bool(cfg.cue_map) or bool(cfg.checkpoint)
 
     primitive: dict[str, dict[str, Any]] = {}
     relation: dict[str, dict[str, Any]] = {}
     features = evidence_features(graph)
-    applied_exact: set[tuple[str, str]] = set()
 
     for feature in features:
         if feature.kind == "relation":
@@ -733,28 +732,6 @@ def encode_cues(
                 feature.evidence_refs,
                 feature.keep_alive,
             )
-        _apply_learned_entries(
-            primitive=primitive,
-            relation=relation,
-            feature=feature,
-            cue_map=cue_map,
-            multiplier=cfg.learned_weight_multiplier,
-            applied_exact=applied_exact,
-        )
-
-    similar_applied = 0
-    route_exclude: set[tuple[str, str]] = set(applied_exact)
-    if cue_map:
-        similar_applied = _apply_similar_routes(
-            primitive=primitive,
-            relation=relation,
-            features=features,
-            cue_map=cue_map,
-            config=cfg,
-            min_overlap=cfg.route_min_overlap,
-            top_k=cfg.route_top_k,
-            exclude=route_exclude,
-        )
 
     policy = _effective_policy(inp, graph)
     feature_coverage = _estimate_feature_coverage(features, primitive, relation)
@@ -764,19 +741,6 @@ def encode_cues(
         should_widen = True
     if feature_coverage < cfg.coverage_widen_threshold:
         should_widen = True
-
-    widen_applied = 0
-    if should_widen and cue_map:
-        widen_applied = _apply_similar_routes(
-            primitive=primitive,
-            relation=relation,
-            features=features,
-            cue_map=cue_map,
-            config=cfg,
-            min_overlap=cfg.widen_min_overlap,
-            top_k=max(cfg.route_top_k, cfg.route_top_k * 2),
-            exclude=route_exclude,
-        )
 
     budget = max(1, int(inp.retrieval_budget * inp.compute_policy.retrieval_budget_multiplier))
     if should_widen:
@@ -812,11 +776,9 @@ def encode_cues(
     )
     cloud.provenance.extra["cue_encoder"] = {
         "mode": "evidence_compile",
-        "learned_map_loaded": bool(cue_map),
+        "learned_map_available": learned_map_available,
         "feature_count": len(features),
         "feature_coverage": round(feature_coverage, 4),
-        "exact_route_hits": len(applied_exact),
-        "similar_route_hits": similar_applied + widen_applied,
         "widen_applied": should_widen,
         "prior_dmf_coverage": prior_dmf_coverage,
         "primitive_candidate_count": len(primitive),

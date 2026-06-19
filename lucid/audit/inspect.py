@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from lucid.audit.logger import AuditLogger, RunAuditManifest, StageAuditRef
+from lucid.audit.stage_summary import format_stage_summary_block
 
 
 def format_stage_ref(ref: StageAuditRef) -> str:
@@ -18,10 +19,7 @@ def format_stage_ref(ref: StageAuditRef) -> str:
 
 def format_manifest(manifest: RunAuditManifest) -> str:
     if manifest.summary:
-        return "\n".join(
-            [manifest.summary.get("headline", ""), ""]
-            + manifest.summary.get("lines", [])
-        )
+        return "\n".join([manifest.summary.get("headline", ""), ""] + manifest.summary.get("lines", []))
     header = [
         f"run_id: {manifest.run_id}",
         f"lucidity: {manifest.lucidity_decision or '-'}",
@@ -45,19 +43,24 @@ def print_run(run_dir: Path | str, *, stage: str | None = None) -> None:
         print(f"stage: {record.get('stage_name')}")
         print(f"headline: {summary.get('headline', '')}")
         print()
-        for line in summary.get("lines", []):
-            print(f"  {line}")
+        for line in format_stage_summary_block(summary, indent="  "):
+            print(line)
         if record.get("error_message"):
             print(f"\nerror: {record['error_message']}")
         return
 
     for ref in manifest.stages:
-        record = json.loads((run_path / ref.file_name).read_text(encoding="utf-8"))
+        stage_key = ref.stage_name if ref.occurrence <= 1 else f"{ref.stage_name}#{ref.occurrence}"
+        file_name = (
+            f"{ref.stage_name}.json"
+            if ref.occurrence <= 1
+            else f"{ref.stage_name}_{ref.occurrence:02d}.json"
+        )
+        record = json.loads((run_path / file_name).read_text(encoding="utf-8"))
         summary = record.get("summary") or {}
-        label = ref.stage_name if ref.occurrence <= 1 else f"{ref.stage_name}#{ref.occurrence}"
-        print(f"--- {label}: {summary.get('headline', '')} ---")
-        for line in summary.get("lines", []):
-            print(f"  {line}")
+        print(f"--- {stage_key}: {summary.get('headline', '')} ---")
+        for line in format_stage_summary_block(summary, indent="  "):
+            print(line)
         print()
 
 

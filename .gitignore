@@ -218,8 +218,23 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Local pipeline audit artifacts (per-run JSON trees)
+# Local checkpoints at repo root (canonical tree is lucid/training/tree/)
+checkpoints/
+
+# Stray legacy folders — must not be used (see lucid.runtime.paths.train_root)
+/train/
+/tests/
 /audit/
+
+# Local artifact tree (gitignored)
+/lucid/training/tree/**
+
+# Pytest sources (committed)
+!/lucid/training/tests/
+!/lucid/training/tests/**
+lucid/training/tests/**/__pycache__/
+lucid/training/tests/**/*.py[cod]
+lucid/training/tests/**/.pytest_cache/
 
 # Lucid generator output (rebuild with lucid-gen; recipes stay in git)
 data/generated/

@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from lucid.runtime.paths import DEFAULT_AUDIT_PERCEPTION
+
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:
     line = line.strip()
@@ -56,7 +58,7 @@ class PerceptionConfig:
     api_key: str = ""
     timeout_s: float = 90.0
     use_json_schema: bool = True  # OpenAI-style structured output when supported
-    audit_dir: str = "audit/perception"
+    audit_dir: str = DEFAULT_AUDIT_PERCEPTION
     write_audit: bool = True
     min_text_units: int = 1
 
@@ -78,7 +80,7 @@ class PerceptionConfig:
             timeout_s=float(os.environ.get("LUCID_PERCEPTION_TIMEOUT_S", "90")),
             use_json_schema=os.environ.get("LUCID_PERCEPTION_USE_JSON_SCHEMA", "1").strip()
             not in ("0", "false", "no"),
-            audit_dir=os.environ.get("LUCID_PERCEPTION_AUDIT_DIR", "audit/perception"),
+            audit_dir=os.environ.get("LUCID_PERCEPTION_AUDIT_DIR", DEFAULT_AUDIT_PERCEPTION),
             write_audit=os.environ.get("LUCID_PERCEPTION_WRITE_AUDIT", "1").strip()
             not in ("0", "false", "no"),
             min_text_units=int(os.environ.get("LUCID_PERCEPTION_MIN_TEXT_UNITS", "1")),

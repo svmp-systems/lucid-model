@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lucid.audit.logger import AuditLogger, content_hash
+from lucid.runtime.paths import resolve_train_path
 from lucid.ir.common import Modality, Provenance
 from lucid.ir.perception import PerceptionInput, PerceptualEvidenceGraph
 from lucid.ir.pipeline import RunContext
@@ -46,7 +47,7 @@ def perception_run_id(inp: PerceptionInput) -> str:
 
 
 def perception_audit_path(base_dir: str | Path, run_id: str) -> Path:
-    return Path(base_dir) / f"{run_id}.json"
+    return resolve_train_path(base_dir) / f"{run_id}.json"
 
 
 def _input_summary(inp: PerceptionInput) -> dict[str, Any]:
@@ -300,7 +301,7 @@ def _write_audit(
 ) -> None:
     if not cfg.write_audit:
         return
-    base = Path(cfg.audit_dir)
+    base = resolve_train_path(cfg.audit_dir, mkdir=True)
     path = perception_audit_path(base, run_id)
     success = graph is not None and error is None
     provenance = graph.provenance if graph is not None else Provenance(modality=inp.modality)

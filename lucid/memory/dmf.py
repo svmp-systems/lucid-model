@@ -18,7 +18,14 @@ from lucid.ir.dmf import (
     NoveltySignal,
     TraceCluster,
 )
+from lucid.cognition.reasoning.cue_routes import competing_cue_keys
+from lucid.memory.cue_match import best_affinity_for_cue
 from lucid.ir.serde import to_dict
+from lucid.runtime.paths import DEFAULT_AUDIT_DMF, resolve_train_path
+
+# DMF emits activated traces (capped by compute max_active_traces); lucidity decides winners.
+DMF_ACTIVATION_FLOOR_PERCENTILE = 0.05  # drop bottom 5% of scored activations (top ~95% band)
+DMF_MIN_ACTIVATION_SCORE = 0.0
 
 
 @dataclass(slots=True)
@@ -55,6 +62,8 @@ class DmfTraceRecord:
     success_count: int = 0
     failure_count: int = 0
     created_from_cues: list[str] = field(default_factory=list)
+    created_from_examples: list[str] = field(default_factory=list)
+    description: str = ""
     last_update_summary: str = ""
 
 
@@ -86,6 +95,9 @@ def trace_record_from_store(record: dict[str, object]) -> DmfTraceRecord:
     created_from = record.get("created_from_cues") or record.get("created_from_episodes") or []
     if not isinstance(created_from, list):
         created_from = []
+    examples = record.get("created_from_examples") or []
+    if not isinstance(examples, list):
+        examples = []
 
     return DmfTraceRecord(
         trace_id=str(record.get("trace_id") or ""),
@@ -101,6 +113,8 @@ def trace_record_from_store(record: dict[str, object]) -> DmfTraceRecord:
         success_count=int(record.get("success_count") or 0),
         failure_count=int(record.get("failure_count") or 0),
         created_from_cues=[str(item) for item in created_from if str(item)],
+        created_from_examples=[str(item) for item in examples if str(item)],
+        description=str(record.get("description") or ""),
         last_update_summary=str(record.get("last_update_summary") or ""),
     )
 
@@ -121,7 +135,7 @@ def tracebank_from_checkpoint(path: str | Path) -> list[DmfTraceRecord]:
 def load_dynamic_memory_field(
     checkpoint: str | Path | None = None,
     *,
-    audit_base_dir: str | Path | None = "audit/dmf",
+    audit_base_dir: str | Path | None = None,
 ) -> DynamicMemoryField:
     """Construct DMF runtime state from an optional checkpoint tracebank."""
 
@@ -143,11 +157,14 @@ class DynamicMemoryField:
         self,
         tracebank: list[DmfTraceRecord] | None = None,
         *,
-        audit_base_dir: str | Path | None = "audit/dmf",
+        audit_base_dir: str | Path | None = DEFAULT_AUDIT_DMF,
     ):
         self.tracebank: list[DmfTraceRecord] = tracebank or []
         self.audit_events: list[DmfAuditEvent] = []
-        self.audit_base_dir = Path(audit_base_dir) if audit_base_dir is not None else None
+        if audit_base_dir is None:
+            self.audit_base_dir = None
+        else:
+            self.audit_base_dir = resolve_train_path(audit_base_dir, mkdir=True)
         self._cue_index: dict[str, set[int]] = {}
         self._trace_id_index: dict[str, int] = {}
         self._cluster_index: dict[str, set[int]] = {}
@@ -248,6 +265,83 @@ class DynamicMemoryField:
         return cue_weights
 
     @staticmethod
+    def _cue_reason_routes(cue_cloud: CueCloud) -> dict[str, list[dict[str, object]]]:
+        routes: dict[str, list[dict[str, object]]] = {}
+        for req in cue_cloud.primitive_trace_activations:
+            key = req.trace_id.strip()
+            if not key:
+                continue
+            routes.setdefault(key, []).append(
+                {
+                    "route_type": "primitive",
+                    "weight": float(req.weight),
+                    "evidence_refs": [ref for ref in req.evidence_refs if ref],
+                    "relation_refs": [],
+                    "endpoint_unit_ids": [],
+                }
+            )
+        for req in cue_cloud.relational_trace_activations:
+            key = req.trace_id.strip()
+            if not key:
+                continue
+            routes.setdefault(key, []).append(
+                {
+                    "route_type": "relational",
+                    "weight": float(req.weight),
+                    "evidence_refs": [],
+                    "relation_refs": [ref for ref in req.relation_refs if ref],
+                    "endpoint_unit_ids": [ref for ref in req.endpoint_unit_ids if ref],
+                }
+            )
+        for key, weight in cue_cloud.soft_context_priors.items():
+            if not key:
+                continue
+            routes.setdefault(key, []).append(
+                {
+                    "route_type": "soft_context",
+                    "weight": float(weight),
+                    "evidence_refs": [],
+                    "relation_refs": [],
+                    "endpoint_unit_ids": [],
+                }
+            )
+        return routes
+
+    @staticmethod
+    def _trace_activation_reasons(
+        record: DmfTraceRecord,
+        cue_routes: dict[str, list[dict[str, object]]],
+    ) -> list[dict[str, object]]:
+        reasons: list[dict[str, object]] = []
+        for cue_key, affinity in sorted(record.cue_affinities.items()):
+            if affinity <= 0:
+                continue
+            routes = cue_routes.get(cue_key, [])
+            for route in routes:
+                cue_weight = float(route.get("weight") or 0.0)
+                if cue_weight <= 0:
+                    continue
+                contribution = max(0.0, min(1.0, cue_weight * float(affinity)))
+                reasons.append(
+                    {
+                        "cue_key": cue_key,
+                        "cue_weight": round(cue_weight, 6),
+                        "trace_affinity": round(float(affinity), 6),
+                        "contribution": round(contribution, 6),
+                        "evidence_refs": list(route.get("evidence_refs") or []),
+                        "relation_refs": list(route.get("relation_refs") or []),
+                        "endpoint_unit_ids": list(route.get("endpoint_unit_ids") or []),
+                        "route_type": str(route.get("route_type") or "unknown"),
+                        "summary": (
+                            f"matched cue '{cue_key}' with affinity "
+                            f"{float(affinity):.3f}"
+                        ),
+                    }
+                )
+        reasons.sort(key=lambda item: (-float(item["contribution"]), str(item["cue_key"])))
+        return reasons
+
+    @staticmethod
     def _heat_multiplier(heat_tier: str, heat_policy: str) -> float:
         base = {
             HeatTier.HOT.value: 1.0,
@@ -277,10 +371,12 @@ class DynamicMemoryField:
 
         score = 0.0
         matched = 0
-        for cue_key, affinity in record.cue_affinities.items():
-            w = cue_weights.get(cue_key, 0.0)
-            if w > 0 and affinity > 0:
-                score += w * affinity
+        for emitted_cue, weight in cue_weights.items():
+            if weight <= 0:
+                continue
+            affinity = best_affinity_for_cue(emitted_cue, record.cue_affinities)
+            if affinity > 0:
+                score += float(weight) * affinity
                 matched += 1
         if record.trace_id and record.trace_id in carryover:
             score += 0.12
@@ -301,17 +397,98 @@ class DynamicMemoryField:
         score = max(0.0, min(1.0, score))
         return min(score, provisional_cap)
 
+    def _filter_activated_traces(
+        self,
+        scored: list[tuple[int, DmfTraceRecord, float]],
+        max_traces: int,
+        cue_cloud: CueCloud | None = None,
+        *,
+        floor_percentile: float = DMF_ACTIVATION_FLOOR_PERCENTILE,
+        min_score: float = DMF_MIN_ACTIVATION_SCORE,
+    ) -> tuple[list[tuple[int, DmfTraceRecord, float]], int]:
+        """Emit activated traces above the score floor, capped at ``max_traces``.
+
+        When cue routes compete on evidence, seed one best-matching trace per route
+        (if it clears the floor) so diverse hypotheticals are not drowned by one cluster.
+        """
+        activated = [item for item in scored if item[2] > min_score]
+        if not activated:
+            return [], 0
+
+        scores = sorted(item[2] for item in activated)
+        if len(scores) == 1:
+            threshold = scores[0]
+        else:
+            index = max(0, min(len(scores) - 1, int(floor_percentile * (len(scores) - 1))))
+            threshold = scores[index]
+
+        passing = [item for item in activated if item[2] >= threshold]
+        if not passing:
+            passing = list(activated)
+
+        chosen_ids: set[int] = set()
+        chosen: list[tuple[int, DmfTraceRecord, float]] = []
+        route_seeded = 0
+
+        if cue_cloud is not None:
+            for cue_keys in competing_cue_keys(cue_cloud).values():
+                for cue_key in cue_keys:
+                    best = self._best_scored_for_cue_key(passing, cue_key)
+                    if best is None or best[2] < threshold:
+                        continue
+                    if best[0] in chosen_ids:
+                        continue
+                    chosen.append(best)
+                    chosen_ids.add(best[0])
+                    route_seeded += 1
+                    if len(chosen) >= max_traces:
+                        return chosen[:max_traces], route_seeded
+
+        for item in passing:
+            if item[0] in chosen_ids:
+                continue
+            chosen.append(item)
+            chosen_ids.add(item[0])
+            if len(chosen) >= max_traces:
+                break
+        return chosen, route_seeded
+
+    def _best_scored_for_cue_key(
+        self,
+        scored: list[tuple[int, DmfTraceRecord, float]],
+        cue_key: str,
+    ) -> tuple[int, DmfTraceRecord, float] | None:
+        best: tuple[int, DmfTraceRecord, float] | None = None
+        for item in scored:
+            record = item[1]
+            affinity = best_affinity_for_cue(cue_key, record.cue_affinities)
+            if affinity <= 0:
+                continue
+            if best is None or item[2] > best[2]:
+                best = item
+        return best
+
     def _candidate_indices(
         self,
         cue_weights: dict[str, float],
         carryover: set[str],
         max_traces: int,
+        *,
+        cue_cloud: CueCloud | None = None,
     ) -> set[int]:
         self.index_new_traces()
         candidates: set[int] = set()
 
         for cue_key in cue_weights:
             candidates.update(self._cue_index.get(cue_key, set()))
+            for idx, record in enumerate(self.tracebank):
+                if best_affinity_for_cue(cue_key, record.cue_affinities) > 0.0:
+                    candidates.add(idx)
+
+        if cue_cloud is not None:
+            for cue_keys in competing_cue_keys(cue_cloud).values():
+                for cue_key in cue_keys:
+                    candidates.update(self._cue_index.get(cue_key, set()))
 
         for trace_id in carryover:
             idx = self._trace_id_index.get(trace_id)
@@ -351,9 +528,15 @@ class DynamicMemoryField:
 
     def run(self, dmf_input: DmfInput) -> DmfOutput:
         cue_weights = self.cue_key_weights(dmf_input.cue_cloud)
+        cue_routes = self._cue_reason_routes(dmf_input.cue_cloud)
         carryover = set(dmf_input.prior_active_trace_ids)
         max_traces = max(1, int(dmf_input.compute_policy.max_active_traces))
-        candidate_indices = self._candidate_indices(cue_weights, carryover, max_traces)
+        candidate_indices = self._candidate_indices(
+            cue_weights,
+            carryover,
+            max_traces,
+            cue_cloud=dmf_input.cue_cloud,
+        )
 
         scored: list[tuple[int, DmfTraceRecord, float]] = []
         for idx in sorted(candidate_indices):
@@ -369,10 +552,15 @@ class DynamicMemoryField:
             )
             scored.append((idx, record, act))
         scored.sort(key=lambda x: x[2], reverse=True)
-        top = scored[:max_traces]
+        top, route_seeded = self._filter_activated_traces(
+            scored,
+            max_traces,
+            dmf_input.cue_cloud,
+        )
 
         active_traces: list[ActiveTrace] = []
         adjusted_activations: dict[str, float] = {}
+        activation_reasons: dict[str, list[dict[str, object]]] = {}
         for idx, record, activation in top:
             inhibition = 0.0
             for linked_idx, conflict_weight in record.conflict_links.items():
@@ -391,6 +579,9 @@ class DynamicMemoryField:
             )
             key = record.trace_id if record.trace_id else f"idx:{idx}"
             adjusted_activations[key] = adj
+            reasons = self._trace_activation_reasons(record, cue_routes)
+            if reasons:
+                activation_reasons[key] = reasons
 
         cluster_map: dict[str, list[ActiveTrace]] = {}
         for trace in active_traces:
@@ -470,6 +661,7 @@ class DynamicMemoryField:
             activation_entropy=activation_entropy,
             coverage_score=coverage_score,
             adjusted_activations=adjusted_activations,
+            activation_reasons=activation_reasons,
             uncertainty_summary=uncertainty,
             tracebank_snapshot_id=dmf_input.tracebank_snapshot_id,
             provenance=dmf_input.cue_cloud.provenance,
@@ -478,7 +670,12 @@ class DynamicMemoryField:
                 "candidate_traces": len(candidate_indices),
                 "selected_traces": len(active_traces),
                 "compute_limit": max_traces,
-                "retrieval_mode": "indexed_top_k",
+                "retrieval_mode": "activated_threshold_filter",
+                "activation_floor_percentile": DMF_ACTIVATION_FLOOR_PERCENTILE,
+                "max_emit_traces": max_traces,
+                "route_diversity_seeded": route_seeded,
+                "competing_evidence_refs": len(competing_cue_keys(dmf_input.cue_cloud)),
+                "trace_reason_count": sum(len(items) for items in activation_reasons.values()),
                 "provisional_traces": len(
                     [
                         trace
